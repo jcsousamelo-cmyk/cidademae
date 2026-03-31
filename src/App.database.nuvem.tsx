@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "./lib/supabase";
 
 type Venda = {
   id: string;
@@ -31,8 +32,35 @@ type ContaFluxo = {
   categoria: string;
 };
 
+type VendaLinhaDb = {
+  id: string;
+  data: string;
+  forma_pagamento: string;
+  valor: number | string;
+  observacao: string | null;
+};
+
+type SangriaLinhaDb = {
+  id: string;
+  data: string;
+  descricao: string;
+  valor: number | string;
+};
+
+type ContaLinhaDb = {
+  id: string;
+  descricao: string;
+  valor: number | string;
+  data_vencimento: string;
+  tipo: string | null;
+  pago: boolean;
+  forma_pagamento: "Dinheiro" | "PIX" | "Cartão" | "Transferência" | null;
+  data_pagamento: string | null;
+  gerar_sangria_automatica: boolean | null;
+  categoria: string | null;
+};
+
 const hoje = () => new Date().toISOString().slice(0, 10);
-const uid = () => Math.random().toString(36).slice(2, 10);
 
 const moeda = (v: number) =>
   new Intl.NumberFormat("pt-BR", {
@@ -40,12 +68,10 @@ const moeda = (v: number) =>
     currency: "BRL",
   }).format(v || 0);
 
-const STORAGE = "gestao_cidade_mae_v3";
 const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v3";
 const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v3";
 const AUTH_STORAGE = "gestao_cidade_mae_auth_v3";
 const CREDENCIAIS_STORAGE = "gestao_cidade_mae_credenciais_v3";
-const FUNDO_CAIXA_STORAGE = "gestao_cidade_mae_fundo_caixa_v1";
 
 const USUARIOS_PADRAO = [{ usuario: "admin", senha: "1234" }];
 
@@ -193,6 +219,55 @@ function GraficoBarras({
   );
 }
 
+function normalizarFormaPagamento(
+  valor: string
+): "Infinity" | "Banese" | "SumUp" | "Dinheiro" | "Outros" {
+  const v = (valor || "").toLowerCase();
+
+  if (v.includes("infinity")) return "Infinity";
+  if (v.includes("banese")) return "Banese";
+  if (v.includes("sum")) return "SumUp";
+  if (v.includes("dinheiro")) return "Dinheiro";
+  return "Outros";
+}
+
+function agruparVendasPorData(linhas: VendaLinhaDb[]): Venda[] {
+  const mapa = new Map<string, Venda>();
+
+  for (const item of linhas) {
+    const data = item.data;
+    const forma = normalizarFormaPagamento(item.forma_pagamento);
+    const valor = Number(item.valor || 0);
+
+    if (!mapa.has(data)) {
+      mapa.set(data, {
+        id: item.id,
+        data,
+        infinity: 0,
+        banese: 0,
+        sumup: 0,
+        dinheiro: 0,
+        outros: 0,
+        observacao: item.observacao || "",
+      });
+    }
+
+    const venda = mapa.get(data)!;
+
+    if (forma === "Infinity") venda.infinity += valor;
+    if (forma === "Banese") venda.banese += valor;
+    if (forma === "SumUp") venda.sumup += valor;
+    if (forma === "Dinheiro") venda.dinheiro += valor;
+    if (forma === "Outros") venda.outros += valor;
+
+    if (!venda.observacao && item.observacao) {
+      venda.observacao = item.observacao;
+    }
+  }
+
+  return Array.from(mapa.values()).sort((a, b) => b.data.localeCompare(a.data));
+}
+
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
@@ -202,8 +277,8 @@ export default function App() {
   const [contasFluxo, setContasFluxo] = useState<ContaFluxo[]>([]);
 
   const [caixaReal, setCaixaReal] = useState("");
-  const [fundoCaixa, setFundoCaixa] = useState("");
   const [loaded, setLoaded] = useState(false);
+  const [carregandoNuvem, setCarregandoNuvem] = useState(true);
   const [mensagem, setMensagem] = useState("");
 
   const [metaDiaria, setMetaDiaria] = useState("");
@@ -224,8 +299,6 @@ export default function App() {
   });
   const [erroCredenciais, setErroCredenciais] = useState("");
 
-  const [editandoVendaId, setEditandoVendaId] = useState<string | null>(null);
-
   const [vendaForm, setVendaForm] = useState({
     data: hoje(),
     infinity: "",
@@ -245,19 +318,6 @@ export default function App() {
     categoria: "Geral",
   });
 
-  function limparFormularioVenda() {
-    setVendaForm({
-      data: hoje(),
-      infinity: "",
-      banese: "",
-      sumup: "",
-      dinheiro: "",
-      outros: "",
-      observacao: "",
-    });
-    setEditandoVendaId(null);
-  }
-
   function dentroPeriodo(data: string) {
     const h = new Date();
     const d = new Date(`${data}T00:00:00`);
@@ -275,6 +335,49 @@ export default function App() {
     }
 
     return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear();
+  }
+
+  async function carregarDadosDaNuvem() {
+    setCarregandoNuvem(true);
+
+    const [resVendas, resSangrias, resContas] = await Promise.all([
+      supabase.from("vendas").select("*").order("data", { ascending: false }),
+      supabase.from("despesas_dia").select("*").order("data", { ascending: false }),
+      supabase.from("contas").select("*").order("data_vencimento", { ascending: false }),
+    ]);
+
+    if (resVendas.error || resSangrias.error || resContas.error) {
+      setMensagem("Erro ao carregar dados da nuvem.");
+      setCarregandoNuvem(false);
+      return;
+    }
+
+    const vendasAgrupadas = agruparVendasPorData((resVendas.data || []) as VendaLinhaDb[]);
+
+    const sangriasMapeadas: Sangria[] = ((resSangrias.data || []) as SangriaLinhaDb[]).map((item) => ({
+      id: String(item.id),
+      data: item.data,
+      categoria: "Pagamento de conta",
+      descricao: item.descricao,
+      valor: Number(item.valor || 0),
+    }));
+
+    const contasMapeadas: ContaFluxo[] = ((resContas.data || []) as ContaLinhaDb[]).map((item) => ({
+      id: String(item.id),
+      descricao: item.descricao,
+      valor: Number(item.valor || 0),
+      vencimento: item.data_vencimento,
+      status: item.pago ? "Pago" : "Pendente",
+      formaPagamento: item.forma_pagamento || "Dinheiro",
+      dataPagamento: item.data_pagamento || "",
+      gerarSangriaAutomatica: item.gerar_sangria_automatica ?? true,
+      categoria: item.categoria || item.tipo || "Geral",
+    }));
+
+    setVendas(vendasAgrupadas);
+    setSangrias(sangriasMapeadas);
+    setContasFluxo(contasMapeadas);
+    setCarregandoNuvem(false);
   }
 
   const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo]);
@@ -348,8 +451,7 @@ export default function App() {
     [sangriasPeriodo]
   );
 
-  const fundoCaixaNumero = Number(fundoCaixa) || 0;
-  const caixaEsperado = fundoCaixaNumero + dinheiro - totalSangria;
+  const caixaEsperado = dinheiro - totalSangria;
   const diferenca = (Number(caixaReal) || 0) - caixaEsperado;
 
   const totalContasPendentes = useMemo(
@@ -401,22 +503,11 @@ export default function App() {
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
 
   useEffect(() => {
-    const data = localStorage.getItem(STORAGE);
-    if (data) {
-      const parsed = JSON.parse(data);
-      setVendas(parsed.vendas || []);
-      setSangrias(parsed.sangrias || []);
-      setContasFluxo(parsed.contasFluxo || []);
-    }
-
     const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
     if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
 
     const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
     if (metaMensalSalva) setMetaMensal(metaMensalSalva);
-
-    const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
-    if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
 
     const credenciaisSalvas = localStorage.getItem(CREDENCIAIS_STORAGE);
     if (credenciaisSalvas) {
@@ -429,16 +520,15 @@ export default function App() {
     const auth = localStorage.getItem(AUTH_STORAGE);
     setLogado(auth === "true");
     setLoaded(true);
+    carregarDadosDaNuvem();
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
-    localStorage.setItem(STORAGE, JSON.stringify({ vendas, sangrias, contasFluxo }));
     localStorage.setItem(META_DIARIA_STORAGE, metaDiaria);
     localStorage.setItem(META_MENSAL_STORAGE, metaMensal);
     localStorage.setItem(CREDENCIAIS_STORAGE, JSON.stringify(usuarios));
-    localStorage.setItem(FUNDO_CAIXA_STORAGE, fundoCaixa);
-  }, [vendas, sangrias, contasFluxo, metaDiaria, metaMensal, usuarios, fundoCaixa, loaded]);
+  }, [metaDiaria, metaMensal, usuarios, loaded]);
 
   useEffect(() => {
     if (!mensagem) return;
@@ -484,7 +574,7 @@ export default function App() {
       return;
     }
 
-    if (credenciaisForm.novaSenha !== credenciaisForm.confirmarSenha) {
+    if (!credenciaisForm.novaSenha !== !credenciaisForm.confirmarSenha) {
       setErroCredenciais("A confirmação da nova senha não confere.");
       return;
     }
@@ -511,87 +601,71 @@ export default function App() {
     setMensagem("Novo usuário criado com sucesso.");
   }
 
-  function salvarVenda() {
-    const novaVenda: Venda = {
-      id: uid(),
-      data: vendaForm.data,
-      infinity: Number(vendaForm.infinity) || 0,
-      banese: Number(vendaForm.banese) || 0,
-      sumup: Number(vendaForm.sumup) || 0,
-      dinheiro: Number(vendaForm.dinheiro) || 0,
-      outros: Number(vendaForm.outros) || 0,
-      observacao: vendaForm.observacao,
-    };
+  async function salvarVenda() {
+    const linhas = [
+      { forma_pagamento: "Infinity", valor: Number(vendaForm.infinity) || 0 },
+      { forma_pagamento: "Banese", valor: Number(vendaForm.banese) || 0 },
+      { forma_pagamento: "SumUp", valor: Number(vendaForm.sumup) || 0 },
+      { forma_pagamento: "Dinheiro", valor: Number(vendaForm.dinheiro) || 0 },
+      { forma_pagamento: "Outros", valor: Number(vendaForm.outros) || 0 },
+    ].filter((item) => item.valor > 0);
 
-    setVendas((prev) => [novaVenda, ...prev]);
-    setMensagem("Venda lançada com sucesso.");
-    limparFormularioVenda();
-  }
-
-  function iniciarEdicaoVenda(venda: Venda) {
-    setEditandoVendaId(venda.id);
-    setVendaForm({
-      data: venda.data,
-      infinity: venda.infinity ? String(venda.infinity) : "",
-      banese: venda.banese ? String(venda.banese) : "",
-      sumup: venda.sumup ? String(venda.sumup) : "",
-      dinheiro: venda.dinheiro ? String(venda.dinheiro) : "",
-      outros: venda.outros ? String(venda.outros) : "",
-      observacao: venda.observacao || "",
-    });
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-
-  function atualizarVenda() {
-    if (!editandoVendaId) return;
-
-    setVendas((prev) =>
-      prev.map((item) =>
-        item.id === editandoVendaId
-          ? {
-              ...item,
-              data: vendaForm.data,
-              infinity: Number(vendaForm.infinity) || 0,
-              banese: Number(vendaForm.banese) || 0,
-              sumup: Number(vendaForm.sumup) || 0,
-              dinheiro: Number(vendaForm.dinheiro) || 0,
-              outros: Number(vendaForm.outros) || 0,
-              observacao: vendaForm.observacao,
-            }
-          : item
-      )
-    );
-
-    setMensagem("Venda atualizada com sucesso.");
-    limparFormularioVenda();
-  }
-
-  function removerVenda(id: string) {
-    setVendas((prev) => prev.filter((item) => item.id !== id));
-
-    if (editandoVendaId === id) {
-      limparFormularioVenda();
+    if (linhas.length === 0) {
+      setMensagem("Informe pelo menos um valor de venda.");
+      return;
     }
 
-    setMensagem("Venda removida.");
+    const payload = linhas.map((item) => ({
+      data: vendaForm.data,
+      forma_pagamento: item.forma_pagamento,
+      valor: item.valor,
+      observacao: vendaForm.observacao || "",
+    }));
+
+    const { error } = await supabase.from("vendas").insert(payload);
+
+    if (error) {
+      setMensagem("Erro ao salvar venda na nuvem.");
+      return;
+    }
+
+    await carregarDadosDaNuvem();
+    setMensagem("Venda lançada com sucesso.");
+
+    setVendaForm({
+      data: hoje(),
+      infinity: "",
+      banese: "",
+      sumup: "",
+      dinheiro: "",
+      outros: "",
+      observacao: "",
+    });
   }
 
-  function salvarContaFluxo() {
+  async function salvarContaFluxo() {
     if (!fluxoForm.descricao || !fluxoForm.valor) return;
 
-    const conta: ContaFluxo = {
-      id: uid(),
+    const payload = {
       descricao: fluxoForm.descricao,
       valor: Number(fluxoForm.valor) || 0,
-      vencimento: fluxoForm.vencimento,
-      status: "Pendente",
-      formaPagamento: fluxoForm.formaPagamento as ContaFluxo["formaPagamento"],
-      dataPagamento: "",
-      gerarSangriaAutomatica: fluxoForm.gerarSangriaAutomatica,
+      data_vencimento: fluxoForm.vencimento,
+      tipo: "variavel",
+      pago: false,
+      forma_pagamento: fluxoForm.formaPagamento,
+      data_pagamento: null,
+      gerar_sangria_automatica: fluxoForm.gerarSangriaAutomatica,
       categoria: fluxoForm.categoria,
     };
 
-    setContasFluxo((prev) => [conta, ...prev]);
+    const { error } = await supabase.from("contas").insert([payload]);
+
+    if (error) {
+      setMensagem("Erro ao lançar conta na nuvem.");
+      return;
+    }
+
+    await carregarDadosDaNuvem();
     setMensagem("Conta lançada no fluxo.");
 
     setFluxoForm({
@@ -604,38 +678,59 @@ export default function App() {
     });
   }
 
-  function marcarContaPaga(id: string) {
+  async function marcarContaPaga(id: string) {
     const conta = contasFluxo.find((item) => item.id === id);
     if (!conta || conta.status === "Pago") return;
 
     const dataPagamento = hoje();
 
-    setContasFluxo((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, status: "Pago", dataPagamento } : item))
-    );
+    const { error } = await supabase
+      .from("contas")
+      .update({
+        pago: true,
+        data_pagamento: dataPagamento,
+      })
+      .eq("id", id);
+
+    if (error) {
+      setMensagem("Erro ao marcar conta como paga.");
+      return;
+    }
 
     if (conta.formaPagamento === "Dinheiro" && conta.gerarSangriaAutomatica) {
-      const novaSangria: Sangria = {
-        id: uid(),
-        data: dataPagamento,
-        categoria: "Pagamento de conta",
-        descricao: `Pagamento automático: ${conta.descricao}`,
-        valor: conta.valor,
-      };
-      setSangrias((prev) => [novaSangria, ...prev]);
-      setMensagem("Conta paga e sangria automática gerada.");
-    } else {
-      setMensagem("Conta marcada como paga.");
+      const { error: erroSangria } = await supabase.from("despesas_dia").insert([
+        {
+          data: dataPagamento,
+          descricao: `Pagamento automático: ${conta.descricao}`,
+          valor: conta.valor,
+        },
+      ]);
+
+      if (erroSangria) {
+        setMensagem("Conta paga, mas houve erro ao gerar sangria.");
+        await carregarDadosDaNuvem();
+        return;
+      }
     }
+
+    await carregarDadosDaNuvem();
+    setMensagem("Conta paga com sucesso.");
   }
 
-  function removerConta(id: string) {
-    setContasFluxo((prev) => prev.filter((item) => item.id !== id));
+  async function removerConta(id: string) {
+    const { error } = await supabase.from("contas").delete().eq("id", id);
+
+    if (error) {
+      setMensagem("Erro ao remover conta.");
+      return;
+    }
+
+    await carregarDadosDaNuvem();
     setMensagem("Conta removida.");
   }
 
   function exportarBackup() {
-    const dados = { vendas, sangrias, contasFluxo, fundoCaixa };
+    const dados = { vendas, sangrias, contasFluxo };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -656,8 +751,7 @@ export default function App() {
         setVendas(dados.vendas || []);
         setSangrias(dados.sangrias || []);
         setContasFluxo(dados.contasFluxo || []);
-        setFundoCaixa(dados.fundoCaixa || "");
-        setMensagem("Backup importado com sucesso.");
+        setMensagem("Backup importado localmente.");
       } catch {
         setMensagem("Erro ao importar backup.");
       }
@@ -718,12 +812,12 @@ export default function App() {
                     Gestão Cidade Mãe
                   </h1>
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                    v3 local
+                    nuvem
                   </span>
                 </div>
 
                 <p className="mt-3 max-w-3xl text-sm text-slate-600 md:text-base">
-                  Automação de caixa, fluxo financeiro, metas, fundo de caixa e edição de vendas.
+                  Automação de caixa, fluxo financeiro, metas e gráficos com salvamento online.
                 </p>
               </div>
 
@@ -747,6 +841,12 @@ export default function App() {
           {mensagem ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
               {mensagem}
+            </div>
+          ) : null}
+
+          {carregandoNuvem ? (
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
+              Carregando dados da nuvem...
             </div>
           ) : null}
 
@@ -828,19 +928,18 @@ export default function App() {
             </div>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5 2xl:grid-cols-9">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4 2xl:grid-cols-8">
             <Bloco titulo="Vendas" valor={moeda(totalVendas)} subtitulo="Total do período" />
             <Bloco titulo="Infinity" valor={moeda(totalInfinity)} />
             <Bloco titulo="Banese" valor={moeda(totalBanese)} />
             <Bloco titulo="SumUp" valor={moeda(totalSumup)} />
             <Bloco titulo="Dinheiro" valor={moeda(dinheiro)} />
             <Bloco titulo="Outros" valor={moeda(totalOutros)} />
-            <Bloco titulo="Fundo de caixa" valor={moeda(fundoCaixaNumero)} />
             <Bloco titulo="Contas pagas" valor={moeda(totalContasPagas)} />
             <Bloco titulo="Lucro" valor={moeda(lucro)} destaque />
           </div>
 
-          <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr_0.8fr]">
+          <div className="grid gap-5 2xl:grid-cols-[1.25fr_1.25fr_0.9fr]">
             <Card titulo="Meta diária">
               <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
                 <div className="space-y-4">
@@ -912,24 +1011,6 @@ export default function App() {
               </div>
             </Card>
 
-            <Card titulo="Fundo de caixa">
-              <div className="space-y-4">
-                <Campo label="Valor inicial no caixa">
-                  <Input
-                    type="number"
-                    value={fundoCaixa}
-                    onChange={(e) => setFundoCaixa(e.target.value)}
-                    placeholder="Ex.: 200"
-                  />
-                </Campo>
-
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">Fundo atual</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(fundoCaixaNumero)}</div>
-                </div>
-              </div>
-            </Card>
-
             <Card titulo="Caixa rápido">
               <div className="space-y-4">
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
@@ -980,7 +1061,7 @@ export default function App() {
               </div>
 
               <div className="grid gap-5 2xl:grid-cols-[1.35fr_0.65fr]">
-                <Card titulo={editandoVendaId ? "Editar venda" : "Lançar venda rápida"}>
+                <Card titulo="Lançar venda rápida">
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                     <Campo label="Data">
                       <Input
@@ -1043,17 +1124,8 @@ export default function App() {
                       </Campo>
                     </div>
 
-                    <div className="flex flex-wrap items-end gap-2">
-                      {editandoVendaId ? (
-                        <>
-                          <Botao onClick={atualizarVenda}>Atualizar venda</Botao>
-                          <Botao variante="secundario" onClick={limparFormularioVenda}>
-                            Cancelar
-                          </Botao>
-                        </>
-                      ) : (
-                        <Botao onClick={salvarVenda}>Salvar venda</Botao>
-                      )}
+                    <div className="flex items-end">
+                      <Botao onClick={salvarVenda}>Salvar venda</Botao>
                     </div>
                   </div>
                 </Card>
@@ -1090,62 +1162,6 @@ export default function App() {
                   </div>
                 </Card>
               </div>
-
-              <Card titulo="Histórico de vendas lançadas">
-                <div className="space-y-3">
-                  {vendas.length === 0 ? (
-                    <p className="text-sm text-slate-500">Nenhuma venda lançada ainda.</p>
-                  ) : (
-                    vendas
-                      .slice()
-                      .sort((a, b) => b.data.localeCompare(a.data))
-                      .map((item) => {
-                        const total =
-                          item.infinity + item.banese + item.sumup + item.dinheiro + item.outros;
-
-                        return (
-                          <div
-                            key={item.id}
-                            className="rounded-2xl border border-slate-200 p-4"
-                          >
-                            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-                              <div className="space-y-2 text-sm text-slate-700">
-                                <div className="text-base font-semibold text-slate-900">
-                                  Venda do dia {item.data}
-                                </div>
-
-                                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
-                                  <div>Infinity: <strong>{moeda(item.infinity)}</strong></div>
-                                  <div>Banese: <strong>{moeda(item.banese)}</strong></div>
-                                  <div>SumUp: <strong>{moeda(item.sumup)}</strong></div>
-                                  <div>Dinheiro: <strong>{moeda(item.dinheiro)}</strong></div>
-                                  <div>Outros: <strong>{moeda(item.outros)}</strong></div>
-                                </div>
-
-                                <div>
-                                  Total: <strong>{moeda(total)}</strong>
-                                </div>
-
-                                {item.observacao ? (
-                                  <div className="text-slate-500">Obs.: {item.observacao}</div>
-                                ) : null}
-                              </div>
-
-                              <div className="flex flex-wrap items-center gap-2">
-                                <Botao variante="secundario" onClick={() => iniciarEdicaoVenda(item)}>
-                                  Editar
-                                </Botao>
-                                <Botao variante="perigo" onClick={() => removerVenda(item.id)}>
-                                  Remover
-                                </Botao>
-                              </div>
-                            </div>
-                          </div>
-                        );
-                      })
-                  )}
-                </div>
-              </Card>
 
               <Card titulo="Sangrias do período">
                 <div className="space-y-3">
