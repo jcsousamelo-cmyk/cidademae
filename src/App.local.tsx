@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { supabase } from "./lib/supabase";
 
 type Venda = {
   id: string;
@@ -32,35 +31,8 @@ type ContaFluxo = {
   categoria: string;
 };
 
-type VendaLinhaDb = {
-  id: string;
-  data: string;
-  forma_pagamento: string;
-  valor: number | string;
-  observacao: string | null;
-};
-
-type SangriaLinhaDb = {
-  id: string;
-  data: string;
-  descricao: string;
-  valor: number | string;
-};
-
-type ContaLinhaDb = {
-  id: string;
-  descricao: string;
-  valor: number | string;
-  data_vencimento: string;
-  tipo: string | null;
-  pago: boolean;
-  forma_pagamento: "Dinheiro" | "PIX" | "Cartão" | "Transferência" | null;
-  data_pagamento: string | null;
-  gerar_sangria_automatica: boolean | null;
-  categoria: string | null;
-};
-
 const hoje = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 10);
 
 const moeda = (v: number) =>
   new Intl.NumberFormat("pt-BR", {
@@ -68,10 +40,11 @@ const moeda = (v: number) =>
     currency: "BRL",
   }).format(v || 0);
 
-const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v3";
-const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v3";
-const AUTH_STORAGE = "gestao_cidade_mae_auth_v3";
-const CREDENCIAIS_STORAGE = "gestao_cidade_mae_credenciais_v3";
+const STORAGE = "gestao_cidade_mae_v2";
+const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v2";
+const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v2";
+const AUTH_STORAGE = "gestao_cidade_mae_auth_v2";
+const CREDENCIAIS_STORAGE = "gestao_cidade_mae_credenciais_v2";
 
 const USUARIOS_PADRAO = [{ usuario: "admin", senha: "1234" }];
 
@@ -219,55 +192,6 @@ function GraficoBarras({
   );
 }
 
-function normalizarFormaPagamento(
-  valor: string
-): "Infinity" | "Banese" | "SumUp" | "Dinheiro" | "Outros" {
-  const v = (valor || "").toLowerCase();
-
-  if (v.includes("infinity")) return "Infinity";
-  if (v.includes("banese")) return "Banese";
-  if (v.includes("sum")) return "SumUp";
-  if (v.includes("dinheiro")) return "Dinheiro";
-  return "Outros";
-}
-
-function agruparVendasPorData(linhas: VendaLinhaDb[]): Venda[] {
-  const mapa = new Map<string, Venda>();
-
-  for (const item of linhas) {
-    const data = item.data;
-    const forma = normalizarFormaPagamento(item.forma_pagamento);
-    const valor = Number(item.valor || 0);
-
-    if (!mapa.has(data)) {
-      mapa.set(data, {
-        id: item.id,
-        data,
-        infinity: 0,
-        banese: 0,
-        sumup: 0,
-        dinheiro: 0,
-        outros: 0,
-        observacao: item.observacao || "",
-      });
-    }
-
-    const venda = mapa.get(data)!;
-
-    if (forma === "Infinity") venda.infinity += valor;
-    if (forma === "Banese") venda.banese += valor;
-    if (forma === "SumUp") venda.sumup += valor;
-    if (forma === "Dinheiro") venda.dinheiro += valor;
-    if (forma === "Outros") venda.outros += valor;
-
-    if (!venda.observacao && item.observacao) {
-      venda.observacao = item.observacao;
-    }
-  }
-
-  return Array.from(mapa.values()).sort((a, b) => b.data.localeCompare(a.data));
-}
-
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
@@ -278,7 +202,6 @@ export default function App() {
 
   const [caixaReal, setCaixaReal] = useState("");
   const [loaded, setLoaded] = useState(false);
-  const [carregandoNuvem, setCarregandoNuvem] = useState(true);
   const [mensagem, setMensagem] = useState("");
 
   const [metaDiaria, setMetaDiaria] = useState("");
@@ -335,49 +258,6 @@ export default function App() {
     }
 
     return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear();
-  }
-
-  async function carregarDadosDaNuvem() {
-    setCarregandoNuvem(true);
-
-    const [resVendas, resSangrias, resContas] = await Promise.all([
-      supabase.from("vendas").select("*").order("data", { ascending: false }),
-      supabase.from("despesas_dia").select("*").order("data", { ascending: false }),
-      supabase.from("contas").select("*").order("data_vencimento", { ascending: false }),
-    ]);
-
-    if (resVendas.error || resSangrias.error || resContas.error) {
-      setMensagem("Erro ao carregar dados da nuvem.");
-      setCarregandoNuvem(false);
-      return;
-    }
-
-    const vendasAgrupadas = agruparVendasPorData((resVendas.data || []) as VendaLinhaDb[]);
-
-    const sangriasMapeadas: Sangria[] = ((resSangrias.data || []) as SangriaLinhaDb[]).map((item) => ({
-      id: String(item.id),
-      data: item.data,
-      categoria: "Pagamento de conta",
-      descricao: item.descricao,
-      valor: Number(item.valor || 0),
-    }));
-
-    const contasMapeadas: ContaFluxo[] = ((resContas.data || []) as ContaLinhaDb[]).map((item) => ({
-      id: String(item.id),
-      descricao: item.descricao,
-      valor: Number(item.valor || 0),
-      vencimento: item.data_vencimento,
-      status: item.pago ? "Pago" : "Pendente",
-      formaPagamento: item.forma_pagamento || "Dinheiro",
-      dataPagamento: item.data_pagamento || "",
-      gerarSangriaAutomatica: item.gerar_sangria_automatica ?? true,
-      categoria: item.categoria || item.tipo || "Geral",
-    }));
-
-    setVendas(vendasAgrupadas);
-    setSangrias(sangriasMapeadas);
-    setContasFluxo(contasMapeadas);
-    setCarregandoNuvem(false);
   }
 
   const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo]);
@@ -503,6 +383,14 @@ export default function App() {
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
 
   useEffect(() => {
+    const data = localStorage.getItem(STORAGE);
+    if (data) {
+      const parsed = JSON.parse(data);
+      setVendas(parsed.vendas || []);
+      setSangrias(parsed.sangrias || []);
+      setContasFluxo(parsed.contasFluxo || []);
+    }
+
     const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
     if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
 
@@ -520,15 +408,15 @@ export default function App() {
     const auth = localStorage.getItem(AUTH_STORAGE);
     setLogado(auth === "true");
     setLoaded(true);
-    carregarDadosDaNuvem();
   }, []);
 
   useEffect(() => {
     if (!loaded) return;
+    localStorage.setItem(STORAGE, JSON.stringify({ vendas, sangrias, contasFluxo }));
     localStorage.setItem(META_DIARIA_STORAGE, metaDiaria);
     localStorage.setItem(META_MENSAL_STORAGE, metaMensal);
     localStorage.setItem(CREDENCIAIS_STORAGE, JSON.stringify(usuarios));
-  }, [metaDiaria, metaMensal, usuarios, loaded]);
+  }, [vendas, sangrias, contasFluxo, metaDiaria, metaMensal, usuarios, loaded]);
 
   useEffect(() => {
     if (!mensagem) return;
@@ -574,7 +462,7 @@ export default function App() {
       return;
     }
 
-    if (!credenciaisForm.novaSenha !== !credenciaisForm.confirmarSenha) {
+    if (credenciaisForm.novaSenha !== credenciaisForm.confirmarSenha) {
       setErroCredenciais("A confirmação da nova senha não confere.");
       return;
     }
@@ -601,35 +489,19 @@ export default function App() {
     setMensagem("Novo usuário criado com sucesso.");
   }
 
-  async function salvarVenda() {
-    const linhas = [
-      { forma_pagamento: "Infinity", valor: Number(vendaForm.infinity) || 0 },
-      { forma_pagamento: "Banese", valor: Number(vendaForm.banese) || 0 },
-      { forma_pagamento: "SumUp", valor: Number(vendaForm.sumup) || 0 },
-      { forma_pagamento: "Dinheiro", valor: Number(vendaForm.dinheiro) || 0 },
-      { forma_pagamento: "Outros", valor: Number(vendaForm.outros) || 0 },
-    ].filter((item) => item.valor > 0);
-
-    if (linhas.length === 0) {
-      setMensagem("Informe pelo menos um valor de venda.");
-      return;
-    }
-
-    const payload = linhas.map((item) => ({
+  function salvarVenda() {
+    const novaVenda: Venda = {
+      id: uid(),
       data: vendaForm.data,
-      forma_pagamento: item.forma_pagamento,
-      valor: item.valor,
-      observacao: vendaForm.observacao || "",
-    }));
+      infinity: Number(vendaForm.infinity) || 0,
+      banese: Number(vendaForm.banese) || 0,
+      sumup: Number(vendaForm.sumup) || 0,
+      dinheiro: Number(vendaForm.dinheiro) || 0,
+      outros: Number(vendaForm.outros) || 0,
+      observacao: vendaForm.observacao,
+    };
 
-    const { error } = await supabase.from("vendas").insert(payload);
-
-    if (error) {
-      setMensagem("Erro ao salvar venda na nuvem.");
-      return;
-    }
-
-    await carregarDadosDaNuvem();
+    setVendas((prev) => [novaVenda, ...prev]);
     setMensagem("Venda lançada com sucesso.");
 
     setVendaForm({
@@ -643,29 +515,22 @@ export default function App() {
     });
   }
 
-  async function salvarContaFluxo() {
+  function salvarContaFluxo() {
     if (!fluxoForm.descricao || !fluxoForm.valor) return;
 
-    const payload = {
+    const conta: ContaFluxo = {
+      id: uid(),
       descricao: fluxoForm.descricao,
       valor: Number(fluxoForm.valor) || 0,
-      data_vencimento: fluxoForm.vencimento,
-      tipo: "variavel",
-      pago: false,
-      forma_pagamento: fluxoForm.formaPagamento,
-      data_pagamento: null,
-      gerar_sangria_automatica: fluxoForm.gerarSangriaAutomatica,
+      vencimento: fluxoForm.vencimento,
+      status: "Pendente",
+      formaPagamento: fluxoForm.formaPagamento as ContaFluxo["formaPagamento"],
+      dataPagamento: "",
+      gerarSangriaAutomatica: fluxoForm.gerarSangriaAutomatica,
       categoria: fluxoForm.categoria,
     };
 
-    const { error } = await supabase.from("contas").insert([payload]);
-
-    if (error) {
-      setMensagem("Erro ao lançar conta na nuvem.");
-      return;
-    }
-
-    await carregarDadosDaNuvem();
+    setContasFluxo((prev) => [conta, ...prev]);
     setMensagem("Conta lançada no fluxo.");
 
     setFluxoForm({
@@ -678,54 +543,33 @@ export default function App() {
     });
   }
 
-  async function marcarContaPaga(id: string) {
+  function marcarContaPaga(id: string) {
     const conta = contasFluxo.find((item) => item.id === id);
     if (!conta || conta.status === "Pago") return;
 
     const dataPagamento = hoje();
 
-    const { error } = await supabase
-      .from("contas")
-      .update({
-        pago: true,
-        data_pagamento: dataPagamento,
-      })
-      .eq("id", id);
-
-    if (error) {
-      setMensagem("Erro ao marcar conta como paga.");
-      return;
-    }
+    setContasFluxo((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, status: "Pago", dataPagamento } : item))
+    );
 
     if (conta.formaPagamento === "Dinheiro" && conta.gerarSangriaAutomatica) {
-      const { error: erroSangria } = await supabase.from("despesas_dia").insert([
-        {
-          data: dataPagamento,
-          descricao: `Pagamento automático: ${conta.descricao}`,
-          valor: conta.valor,
-        },
-      ]);
-
-      if (erroSangria) {
-        setMensagem("Conta paga, mas houve erro ao gerar sangria.");
-        await carregarDadosDaNuvem();
-        return;
-      }
+      const novaSangria: Sangria = {
+        id: uid(),
+        data: dataPagamento,
+        categoria: "Pagamento de conta",
+        descricao: `Pagamento automático: ${conta.descricao}`,
+        valor: conta.valor,
+      };
+      setSangrias((prev) => [novaSangria, ...prev]);
+      setMensagem("Conta paga e sangria automática gerada.");
+    } else {
+      setMensagem("Conta marcada como paga.");
     }
-
-    await carregarDadosDaNuvem();
-    setMensagem("Conta paga com sucesso.");
   }
 
-  async function removerConta(id: string) {
-    const { error } = await supabase.from("contas").delete().eq("id", id);
-
-    if (error) {
-      setMensagem("Erro ao remover conta.");
-      return;
-    }
-
-    await carregarDadosDaNuvem();
+  function removerConta(id: string) {
+    setContasFluxo((prev) => prev.filter((item) => item.id !== id));
     setMensagem("Conta removida.");
   }
 
@@ -751,7 +595,7 @@ export default function App() {
         setVendas(dados.vendas || []);
         setSangrias(dados.sangrias || []);
         setContasFluxo(dados.contasFluxo || []);
-        setMensagem("Backup importado localmente.");
+        setMensagem("Backup importado com sucesso.");
       } catch {
         setMensagem("Erro ao importar backup.");
       }
@@ -812,12 +656,13 @@ export default function App() {
                     Gestão Cidade Mãe
                   </h1>
                   <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-                    nuvem
+                    v2
                   </span>
                 </div>
 
                 <p className="mt-3 max-w-3xl text-sm text-slate-600 md:text-base">
-                  Automação de caixa, fluxo financeiro, metas e gráficos com salvamento online.
+                  Automação de caixa, fluxo financeiro, metas e gráficos em um painel mais amplo e
+                  prático para o dia a dia do empório.
                 </p>
               </div>
 
@@ -841,12 +686,6 @@ export default function App() {
           {mensagem ? (
             <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800">
               {mensagem}
-            </div>
-          ) : null}
-
-          {carregandoNuvem ? (
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 shadow-sm">
-              Carregando dados da nuvem...
             </div>
           ) : null}
 
