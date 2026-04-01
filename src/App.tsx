@@ -1,3 +1,6 @@
+import { doc, getDoc, setDoc } from "firebase/firestore";
+import { db } from "./firebase";
+
 import React, { useEffect, useMemo, useState } from "react";
 
 type Venda = {
@@ -274,33 +277,34 @@ export default function App() {
 
   const alertaMetaBaixa = metaNumero > 0 && totalVendas < metaNumero && periodo === "dia";
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
+useEffect(() => {
+  if (!loaded) return;
 
-  useEffect(() => {
-    const data = localStorage.getItem(STORAGE);
-    if (data) {
-      const parsed = JSON.parse(data);
-      setVendas(parsed.vendas || []);
-      setSangrias(parsed.sangrias || []);
-      setContasFluxo(parsed.contasFluxo || []);
-      setFechamentos(parsed.fechamentos || []);
-    }
-    const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
-    if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
-    const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
-    if (metaMensalSalva) setMetaMensal(metaMensalSalva);
-    const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
-    if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
-    const credenciaisSalvas = localStorage.getItem(CREDENCIAIS_STORAGE);
-    if (credenciaisSalvas) {
-      try {
-        const parsed = JSON.parse(credenciaisSalvas);
-        setUsuarios(parsed.length ? parsed : USUARIOS_PADRAO);
-      } catch {}
-    }
-    const auth = localStorage.getItem(AUTH_STORAGE);
-    setLogado(auth === "true");
-    setLoaded(true);
-  }, []);
+  async function salvar() {
+    const ref = doc(db, "gestao", "cidade-mae");
+
+    await setDoc(ref, {
+      vendas,
+      sangrias,
+      contasFluxo,
+      fechamentos,
+      metaDiaria,
+      metaMensal,
+      fundoCaixa,
+    });
+  }
+
+  salvar();
+}, [
+  vendas,
+  sangrias,
+  contasFluxo,
+  fechamentos,
+  metaDiaria,
+  metaMensal,
+  fundoCaixa,
+  loaded,
+]);
 
   useEffect(() => {
     if (!loaded) return;
