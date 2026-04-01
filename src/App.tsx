@@ -891,6 +891,66 @@ export default function App() {
           </div>
 
           <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr_0.8fr]">
+            
+            <Card titulo={editandoVendaId ? "Editar venda" : "Lançar Caixa Dia"}>
+                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                    <Campo label="Data">
+                      <Input type="date" value={vendaForm.data} onChange={(e) => setVendaForm({ ...vendaForm, data: e.target.value })} />
+                    </Campo>
+                    <Campo label="Infinity">
+                      <Input type="number" value={vendaForm.infinity} onChange={(e) => setVendaForm({ ...vendaForm, infinity: e.target.value })} />
+                    </Campo>
+                    <Campo label="Banese">
+                      <Input type="number" value={vendaForm.banese} onChange={(e) => setVendaForm({ ...vendaForm, banese: e.target.value })} />
+                    </Campo>
+                    <Campo label="SumUp">
+                      <Input type="number" value={vendaForm.sumup} onChange={(e) => setVendaForm({ ...vendaForm, sumup: e.target.value })} />
+                    </Campo>
+                    <Campo label="Dinheiro">
+                      <Input type="number" value={vendaForm.dinheiro} onChange={(e) => setVendaForm({ ...vendaForm, dinheiro: e.target.value })} />
+                    </Campo>
+                    <Campo label="Outros">
+                      <Input type="number" value={vendaForm.outros} onChange={(e) => setVendaForm({ ...vendaForm, outros: e.target.value })} />
+                    </Campo>
+                    <Campo label="Despesa rápida">
+                      <Input
+                        type="number"
+                        value={vendaForm.despesaRapida}
+                        onChange={(e) => setVendaForm({ ...vendaForm, despesaRapida: e.target.value })}
+                        placeholder="Ex.: 20"
+                      />
+                    </Campo>
+                    <Campo label="Motivo da despesa">
+                      <Input
+                        type="text"
+                        value={vendaForm.motivoDespesa}
+                        onChange={(e) => setVendaForm({ ...vendaForm, motivoDespesa: e.target.value })}
+                        placeholder="Ex.: água, almoço, uber"
+                      />
+                    </Campo>
+                    <div className="md:col-span-2 xl:col-span-2">
+                      <Campo label="Observação">
+                        <Input
+                          type="text"
+                          value={vendaForm.observacao}
+                          onChange={(e) => setVendaForm({ ...vendaForm, observacao: e.target.value })}
+                          placeholder="Ex.: movimento forte no fim da tarde"
+                        />
+                      </Campo>
+                    </div>
+                    <div className="flex flex-wrap items-end gap-2">
+                      {editandoVendaId ? (
+                        <>
+                          <Botao onClick={atualizarVenda}>Atualizar venda</Botao>
+                          <Botao variante="secundario" onClick={limparFormularioVenda}>Cancelar</Botao>
+                        </>
+                      ) : (
+                        <Botao onClick={salvarVenda}>Salvar venda</Botao>
+                      )}
+                    </div>
+                  </div>
+                </Card>
+
             <Card titulo="Meta diária">
               <div className="grid gap-5 xl:grid-cols-[1.2fr_0.8fr]">
                 <div className="space-y-4">
@@ -993,64 +1053,7 @@ export default function App() {
               </div>
 
               <div className="grid gap-5 2xl:grid-cols-[1.35fr_0.65fr]">
-                <Card titulo={editandoVendaId ? "Editar venda" : "Lançar venda rápida"}>
-                  <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
-                    <Campo label="Data">
-                      <Input type="date" value={vendaForm.data} onChange={(e) => setVendaForm({ ...vendaForm, data: e.target.value })} />
-                    </Campo>
-                    <Campo label="Infinity">
-                      <Input type="number" value={vendaForm.infinity} onChange={(e) => setVendaForm({ ...vendaForm, infinity: e.target.value })} />
-                    </Campo>
-                    <Campo label="Banese">
-                      <Input type="number" value={vendaForm.banese} onChange={(e) => setVendaForm({ ...vendaForm, banese: e.target.value })} />
-                    </Campo>
-                    <Campo label="SumUp">
-                      <Input type="number" value={vendaForm.sumup} onChange={(e) => setVendaForm({ ...vendaForm, sumup: e.target.value })} />
-                    </Campo>
-                    <Campo label="Dinheiro">
-                      <Input type="number" value={vendaForm.dinheiro} onChange={(e) => setVendaForm({ ...vendaForm, dinheiro: e.target.value })} />
-                    </Campo>
-                    <Campo label="Outros">
-                      <Input type="number" value={vendaForm.outros} onChange={(e) => setVendaForm({ ...vendaForm, outros: e.target.value })} />
-                    </Campo>
-                    <Campo label="Despesa rápida">
-                      <Input
-                        type="number"
-                        value={vendaForm.despesaRapida}
-                        onChange={(e) => setVendaForm({ ...vendaForm, despesaRapida: e.target.value })}
-                        placeholder="Ex.: 20"
-                      />
-                    </Campo>
-                    <Campo label="Motivo da despesa">
-                      <Input
-                        type="text"
-                        value={vendaForm.motivoDespesa}
-                        onChange={(e) => setVendaForm({ ...vendaForm, motivoDespesa: e.target.value })}
-                        placeholder="Ex.: água, almoço, uber"
-                      />
-                    </Campo>
-                    <div className="md:col-span-2 xl:col-span-2">
-                      <Campo label="Observação">
-                        <Input
-                          type="text"
-                          value={vendaForm.observacao}
-                          onChange={(e) => setVendaForm({ ...vendaForm, observacao: e.target.value })}
-                          placeholder="Ex.: movimento forte no fim da tarde"
-                        />
-                      </Campo>
-                    </div>
-                    <div className="flex flex-wrap items-end gap-2">
-                      {editandoVendaId ? (
-                        <>
-                          <Botao onClick={atualizarVenda}>Atualizar venda</Botao>
-                          <Botao variante="secundario" onClick={limparFormularioVenda}>Cancelar</Botao>
-                        </>
-                      ) : (
-                        <Botao onClick={salvarVenda}>Salvar venda</Botao>
-                      )}
-                    </div>
-                  </div>
-                </Card>
+                
 
                 <Card titulo="Conferência de caixa">
                   <div className="space-y-4">
