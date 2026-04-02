@@ -5,12 +5,20 @@ import {
   setDoc,
   collection,
   getDocs,
-  addDoc
 } from "firebase/firestore";
-import { db } from "./firebase";
+import { auth, db, secondaryAuth } from "./firebase";
+
+import {
+  createUserWithEmailAndPassword,
+  EmailAuthProvider,
+  onAuthStateChanged,
+  reauthenticateWithCredential,
+  signInWithEmailAndPassword,
+  signOut,
+} from "firebase/auth";
+import type { User } from "firebase/auth";
 
 import React, { useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
 
 type Venda = {
   id: string;
@@ -66,11 +74,11 @@ type FechamentoDiario = {
   criadoEm: string;
 };
 
-
 type UsuarioSistema = {
   id?: string;
+  uid?: string;
   usuario: string;
-  senha: string;
+  email: string;
   nome: string;
   tipo: string;
   ativo: boolean;
@@ -78,22 +86,6 @@ type UsuarioSistema = {
 
 const hoje = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
-
-const formatoMes = (data: Date) =>
-  `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, "0")}`;
-
-const inicioMes = (mesRef: string) => new Date(`${mesRef}-01T00:00:00`);
-const nomeMesAno = (mesRef: string) =>
-  inicioMes(mesRef).toLocaleDateString("pt-BR", {
-    month: "long",
-    year: "numeric",
-  });
-
-const navegarMesRef = (mesRef: string, delta: number) => {
-  const data = inicioMes(mesRef);
-  data.setMonth(data.getMonth() + delta);
-  return formatoMes(data);
-};
 
 const moeda = (v: number) =>
   new Intl.NumberFormat("pt-BR", {
@@ -104,9 +96,22 @@ const moeda = (v: number) =>
 const STORAGE = "gestao_cidade_mae_v4";
 const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v4";
 const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v4";
-const AUTH_STORAGE = "gestao_cidade_mae_auth_v4";
 const FUNDO_CAIXA_STORAGE = "gestao_cidade_mae_fundo_caixa_v2";
 
+const LOGIN_DOMAIN = "cidademae.local";
+
+const loginParaEmail = (login: string) => {
+  const valor = login.trim().toLowerCase();
+  if (!valor) return "";
+  if (valor.includes("@")) return valor;
+  return `${valor}@${LOGIN_DOMAIN}`;
+};
+
+const emailParaUsuario = (email: string) => email.split("@")[0] || "";
+
+const normalizarLogin = (valor: string) => valor.trim().toLowerCase();
+
+const loginPodeSerEmail = (valor: string) => normalizarLogin(valor).includes("@");
 
 function Bloco({
   titulo,
@@ -256,7 +261,6 @@ function GraficoBarras({ titulo, dados }: { titulo: string; dados: Array<{ label
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo" | "fechamentos">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
-  const [mesReferencia, setMesReferencia] = useState(formatoMes(new Date()));
 
   const [vendas, setVendas] = useState<Venda[]>([]);
   const [sangrias, setSangrias] = useState<Sangria[]>([]);
@@ -271,17 +275,20 @@ export default function App() {
   const [metaDiaria, setMetaDiaria] = useState("");
   const [metaMensal, setMetaMensal] = useState("");
 
+  const [authPronto, setAuthPronto] = useState(false);
   const [logado, setLogado] = useState(false);
   const [loginForm, setLoginForm] = useState({ usuario: "", senha: "" });
   const [erroLogin, setErroLogin] = useState("");
 
   const [usuarios, setUsuarios] = useState<UsuarioSistema[]>([]);
+  const [usuarioFirebase, setUsuarioFirebase] = useState<User | null>(null);
   const [usuarioLogado, setUsuarioLogado] = useState<UsuarioSistema | null>(null);
 
   const [credenciaisForm, setCredenciaisForm] = useState({
     usuarioAtual: "",
     senhaAtual: "",
     novoUsuario: "",
+    novoNome: "",
     novaSenha: "",
     confirmarSenha: "",
   });
@@ -312,32 +319,121 @@ export default function App() {
     tipo: "Financeiro" as TipoDespesa,
   });
 
-  async function obterColecaoUsuarios() {
+  async function detectarColecaoUsuarios() {
     const nomes = ["usuarios", "Usuários"] as const;
 
     for (const nome of nomes) {
-      const ref = collection(db, nome);
-      const snap = await getDocs(ref);
-      if (!snap.empty) {
-        return { ref, snap, nome };
-      }
+      const snap = await getDocs(collection(db, nome));
+      if (!snap.empty) return nome;
     }
 
-    const refPadrao = collection(db, "Usuários");
-    const snapPadrao = await getDocs(refPadrao);
-    return { ref: refPadrao, snap: snapPadrao, nome: "Usuários" as const };
+    return "usuarios" as const;
   }
 
   async function carregarUsuariosFirebase() {
-    const { snap } = await obterColecaoUsuarios();
+    const nomeColecao = await detectarColecaoUsuarios();
+    const snap = await getDocs(collection(db, nomeColecao));
 
-    const lista: UsuarioSistema[] = snap.docs.map((docItem) => ({
-      id: docItem.id,
-      ...(docItem.data() as Omit<UsuarioSistema, "id">),
-    }));
+    const lista: UsuarioSistema[] = snap.docs.map((item) => {
+      const data = item.data() as Partial<UsuarioSistema> & {
+        usuario?: string;
+        email?: string;
+        nome?: string;
+        tipo?: string;
+        ativo?: boolean;
+        uid?: string;
+      };
+
+      return {
+        id: item.id,
+        uid: data.uid || item.id,
+        usuario: data.usuario || emailParaUsuario(data.email || ""),
+        email: data.email || loginParaEmail(data.usuario || item.id),
+        nome: data.nome || data.usuario || emailParaUsuario(data.email || ""),
+        tipo: data.tipo || "caixa",
+        ativo: data.ativo !== false,
+      };
+    });
 
     setUsuarios(lista);
-    return lista;
+    return { nomeColecao, lista };
+  }
+
+  async function carregarOuCriarPerfilUsuario(user: User) {
+    const { nomeColecao, lista } = await carregarUsuariosFirebase();
+    const usuarioPorEmail = emailParaUsuario(user.email || "");
+
+    let perfil =
+      lista.find((item) => item.uid === user.uid) ||
+      lista.find((item) => item.email === (user.email || "")) ||
+      lista.find((item) => item.usuario === usuarioPorEmail);
+
+    if (!perfil) {
+      perfil = {
+        id: user.uid,
+        uid: user.uid,
+        usuario: usuarioPorEmail || user.uid,
+        email: user.email || loginParaEmail(user.uid),
+        nome: user.displayName || usuarioPorEmail || "Usuário",
+        tipo: "caixa",
+        ativo: true,
+      };
+    }
+
+    const perfilNormalizado: UsuarioSistema = {
+      ...perfil,
+      id: user.uid,
+      uid: user.uid,
+      usuario: perfil.usuario || usuarioPorEmail || user.uid,
+      email: user.email || perfil.email || loginParaEmail(perfil.usuario || user.uid),
+      nome: perfil.nome || perfil.usuario || usuarioPorEmail || "Usuário",
+      tipo: perfil.tipo || "caixa",
+      ativo: perfil.ativo !== false,
+    };
+
+    await setDoc(doc(db, nomeColecao, user.uid), perfilNormalizado, { merge: true });
+    setUsuarioLogado(perfilNormalizado);
+    setUsuarios((prev) => {
+      const semAtual = prev.filter((item) => item.uid !== user.uid);
+      return [...semAtual, perfilNormalizado];
+    });
+
+    return perfilNormalizado;
+  }
+
+  async function carregarDadosSistema() {
+    const ref = doc(db, "gestao", "cidade-mae");
+    const snap = await getDoc(ref);
+
+    if (snap.exists()) {
+      const dados = snap.data();
+      setVendas(dados.vendas || []);
+      setSangrias(dados.sangrias || []);
+      setContasFluxo(dados.contasFluxo || []);
+      setFechamentos(dados.fechamentos || []);
+      setMetaDiaria(dados.metaDiaria || "");
+      setMetaMensal(dados.metaMensal || "");
+      setFundoCaixa(dados.fundoCaixa || "");
+      return;
+    }
+
+    const data = localStorage.getItem(STORAGE);
+    if (data) {
+      const parsed = JSON.parse(data);
+      setVendas(parsed.vendas || []);
+      setSangrias(parsed.sangrias || []);
+      setContasFluxo(parsed.contasFluxo || []);
+      setFechamentos(parsed.fechamentos || []);
+    }
+
+    const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
+    if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
+
+    const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
+    if (metaMensalSalva) setMetaMensal(metaMensalSalva);
+
+    const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
+    if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
   }
 
   function limparFormularioVenda() {
@@ -368,14 +464,14 @@ export default function App() {
       fim.setHours(23, 59, 59, 999);
       return d >= inicio && d <= fim;
     }
-    return formatoMes(d) === mesReferencia;
+    return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear();
   }
 
-  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo, mesReferencia]);
-  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo, mesReferencia]);
+  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo]);
+  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo]);
   const contasPeriodo = useMemo(
     () => contasFluxo.filter((c) => dentroPeriodo(c.vencimento) || (c.dataPagamento && dentroPeriodo(c.dataPagamento))),
-    [contasFluxo, periodo, mesReferencia]
+    [contasFluxo, periodo]
   );
 
   const totalVendas = useMemo(
@@ -394,8 +490,12 @@ export default function App() {
   const percentualMeta = metaNumero > 0 ? Math.min((totalVendas / metaNumero) * 100, 100) : 0;
 
   const vendasMesAtual = useMemo(() => {
-    return vendas.filter((v) => v.data.startsWith(mesReferencia));
-  }, [vendas, mesReferencia]);
+    const agora = new Date();
+    return vendas.filter((v) => {
+      const d = new Date(`${v.data}T00:00:00`);
+      return d.getMonth() === agora.getMonth() && d.getFullYear() === agora.getFullYear();
+    });
+  }, [vendas]);
 
   const totalVendasMes = useMemo(
     () => vendasMesAtual.reduce((acc, v) => acc + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros, 0),
@@ -431,10 +531,9 @@ export default function App() {
     return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
   }, [contasPagasFinanceiras]);
 
-  const totalLiquido = totalVendas - totalDespesasFinanceiras;
-  const nomeMesSelecionado = nomeMesAno(mesReferencia);
+  const lucro = totalVendas - totalDespesasFinanceiras;
   const alertaGastoAlto = totalDespesasFinanceiras > totalVendas * 0.8 && totalVendas > 0;
-  const alertaLucroBaixo = totalLiquido > 0 && totalLiquido < totalVendas * 0.2;
+  const alertaLucroBaixo = lucro > 0 && lucro < totalVendas * 0.2;
   const principalCategoria = despesasPorCategoria.length > 0 ? despesasPorCategoria[0] : null;
   const alertaCategoriaPesada =
     principalCategoria ? principalCategoria[1] > totalDespesasFinanceiras * 0.4 && totalDespesasFinanceiras > 0 : false;
@@ -458,107 +557,45 @@ export default function App() {
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
 
   useEffect(() => {
-    async function carregarDados() {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setAuthPronto(false);
+      setLoaded(false);
+
+      if (!user) {
+        setLogado(false);
+        setUsuarioFirebase(null);
+        setUsuarioLogado(null);
+        setAuthPronto(true);
+        return;
+      }
+
       try {
-        const ref = doc(db, "gestao", "cidade-mae");
-        const snap = await getDoc(ref);
+        setUsuarioFirebase(user);
+        const perfil = await carregarOuCriarPerfilUsuario(user);
 
-        if (snap.exists()) {
-          const dados = snap.data();
-          setVendas(dados.vendas || []);
-          setSangrias(dados.sangrias || []);
-          setContasFluxo(dados.contasFluxo || []);
-          setFechamentos(dados.fechamentos || []);
-          setMetaDiaria(dados.metaDiaria || "");
-          setMetaMensal(dados.metaMensal || "");
-          setFundoCaixa(dados.fundoCaixa || "");
-        } else {
-          const data = localStorage.getItem(STORAGE);
-          if (data) {
-            const parsed = JSON.parse(data);
-            setVendas(parsed.vendas || []);
-            setSangrias(parsed.sangrias || []);
-            setContasFluxo(parsed.contasFluxo || []);
-            setFechamentos(parsed.fechamentos || []);
-          }
-
-          const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
-          if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
-
-          const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
-          if (metaMensalSalva) setMetaMensal(metaMensalSalva);
-
-          const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
-          if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
+        if (!perfil.ativo) {
+          await signOut(auth);
+          setErroLogin("Usuário inativo.");
+          setAuthPronto(true);
+          return;
         }
 
-        try {
-          await carregarUsuariosFirebase();
-        } catch (error) {
-          console.error("Erro ao carregar usuários:", error);
-          setUsuarios([]);
-        }
-
-        const auth = localStorage.getItem(AUTH_STORAGE);
-        const usuarioSalvo = localStorage.getItem("usuario_logado");
-        setLogado(auth === "true");
-
-        if (usuarioSalvo) {
-          try {
-            setUsuarioLogado(JSON.parse(usuarioSalvo));
-          } catch {
-            setUsuarioLogado(null);
-          }
-        }
+        await carregarDadosSistema();
+        setLogado(true);
       } catch (error) {
-        console.error("Erro ao carregar dados:", error);
-
-        const data = localStorage.getItem(STORAGE);
-        if (data) {
-          const parsed = JSON.parse(data);
-          setVendas(parsed.vendas || []);
-          setSangrias(parsed.sangrias || []);
-          setContasFluxo(parsed.contasFluxo || []);
-          setFechamentos(parsed.fechamentos || []);
-        }
-
-        const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
-        if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
-
-        const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
-        if (metaMensalSalva) setMetaMensal(metaMensalSalva);
-
-        const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
-        if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
-
-        try {
-          await carregarUsuariosFirebase();
-        } catch (error) {
-          console.error("Erro ao carregar usuários:", error);
-          setUsuarios([]);
-        }
-
-        const auth = localStorage.getItem(AUTH_STORAGE);
-        const usuarioSalvo = localStorage.getItem("usuario_logado");
-        setLogado(auth === "true");
-
-        if (usuarioSalvo) {
-          try {
-            setUsuarioLogado(JSON.parse(usuarioSalvo));
-          } catch {
-            setUsuarioLogado(null);
-          }
-        }
+        console.error("Erro ao carregar sessão autenticada:", error);
+        setErroLogin("Erro ao carregar seus dados. Tente novamente.");
       } finally {
         setLoaded(true);
+        setAuthPronto(true);
       }
-    }
+    });
 
-    carregarDados();
+    return () => unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !usuarioFirebase) return;
 
     async function salvar() {
       try {
@@ -583,7 +620,7 @@ export default function App() {
     localStorage.setItem(META_DIARIA_STORAGE, metaDiaria);
     localStorage.setItem(META_MENSAL_STORAGE, metaMensal);
     localStorage.setItem(FUNDO_CAIXA_STORAGE, fundoCaixa);
-  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, fundoCaixa, loaded]);
+  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, fundoCaixa, loaded, usuarioFirebase]);
 
   useEffect(() => {
     if (!mensagem) return;
@@ -594,50 +631,74 @@ export default function App() {
   async function entrar() {
     setErroLogin("");
 
-    try {
-      const lista = await carregarUsuariosFirebase();
+    const loginDigitado = normalizarLogin(loginForm.usuario);
+    const senhaDigitada = loginForm.senha;
 
-      const usuarioEncontrado = lista.find(
-        (u) =>
-          u.usuario === loginForm.usuario &&
-          u.senha === loginForm.senha &&
-          u.ativo === true
-      );
+    if (!loginDigitado || !senhaDigitada) {
+      setErroLogin("Informe e-mail/usuário e senha.");
+      return;
+    }
 
-      if (usuarioEncontrado) {
-        setLogado(true);
-        setUsuarioLogado(usuarioEncontrado);
-        localStorage.setItem(AUTH_STORAGE, "true");
-        localStorage.setItem("usuario_logado", JSON.stringify(usuarioEncontrado));
-        setErroLogin("");
+    const tentativas = loginPodeSerEmail(loginDigitado)
+      ? [loginDigitado]
+      : [loginParaEmail(loginDigitado)];
+
+    let ultimoErro: any = null;
+
+    for (const emailTentativa of tentativas) {
+      try {
+        await signInWithEmailAndPassword(auth, emailTentativa, senhaDigitada);
         setLoginForm({ usuario: "", senha: "" });
-      } else {
-        setErroLogin("Usuário ou senha inválidos.");
+        return;
+      } catch (error: any) {
+        ultimoErro = error;
       }
-    } catch (error) {
-      console.error("Erro ao fazer login:", error);
-      setErroLogin("Erro ao conectar com o banco de dados.");
+    }
+
+    console.error("Erro ao fazer login:", ultimoErro);
+    if (
+      ultimoErro?.code === "auth/invalid-credential" ||
+      ultimoErro?.code === "auth/wrong-password" ||
+      ultimoErro?.code === "auth/user-not-found" ||
+      ultimoErro?.code === "auth/invalid-email"
+    ) {
+      setErroLogin("E-mail/usuário ou senha inválidos.");
+    } else {
+      setErroLogin("Não foi possível entrar agora.");
     }
   }
 
-  function sair() {
-    setLogado(false);
-    setUsuarioLogado(null);
-    localStorage.removeItem(AUTH_STORAGE);
-    localStorage.removeItem("usuario_logado");
+  async function sair() {
+    await signOut(auth);
     setMensagem("Sessão encerrada.");
   }
 
   async function salvarCredenciais() {
     setErroCredenciais("");
 
-    const usuarioValido =
-      usuarioLogado &&
-      usuarioLogado.usuario === credenciaisForm.usuarioAtual &&
-      usuarioLogado.senha === credenciaisForm.senhaAtual;
+    if (!usuarioFirebase || !usuarioLogado) {
+      setErroCredenciais("Sessão inválida. Entre novamente.");
+      return;
+    }
 
-    if (!usuarioValido) {
-      setErroCredenciais("Usuário atual ou senha atual incorretos.");
+    if (usuarioLogado.tipo !== "admin") {
+      setErroCredenciais("Somente usuário admin pode criar novos acessos.");
+      return;
+    }
+
+    const usuarioAtualInformado = normalizarLogin(credenciaisForm.usuarioAtual);
+    const usuarioAtualValido =
+      usuarioAtualInformado === normalizarLogin(usuarioLogado.usuario) ||
+      usuarioAtualInformado === normalizarLogin(usuarioLogado.email) ||
+      usuarioAtualInformado === normalizarLogin(emailParaUsuario(usuarioLogado.email));
+
+    if (!usuarioAtualValido) {
+      setErroCredenciais("Usuário atual incorreto.");
+      return;
+    }
+
+    if (!credenciaisForm.senhaAtual) {
+      setErroCredenciais("Informe a senha atual para confirmar.");
       return;
     }
 
@@ -652,31 +713,63 @@ export default function App() {
     }
 
     try {
-      const { ref } = await obterColecaoUsuarios();
-      const lista = await carregarUsuariosFirebase();
+      const credencialAtual = EmailAuthProvider.credential(
+        usuarioFirebase.email || loginParaEmail(usuarioLogado.usuario),
+        credenciaisForm.senhaAtual
+      );
 
-      const existe = lista.some((u) => u.usuario === credenciaisForm.novoUsuario);
+      await reauthenticateWithCredential(usuarioFirebase, credencialAtual);
+
+      const novoLogin = credenciaisForm.novoUsuario.trim().toLowerCase();
+      const novoEmail = loginParaEmail(novoLogin);
+      const novoNome = credenciaisForm.novoNome.trim() || credenciaisForm.novoUsuario.trim();
+
+      const existe = usuarios.some(
+        (u) => u.usuario.toLowerCase() === novoLogin || u.email.toLowerCase() === novoEmail
+      );
       if (existe) {
         setErroCredenciais("Esse usuário já existe.");
         return;
       }
 
-      const novoUsuario: UsuarioSistema = {
-        usuario: credenciaisForm.novoUsuario,
-        senha: credenciaisForm.novaSenha,
-        nome: credenciaisForm.novoUsuario,
+      const novoUserCredential = await createUserWithEmailAndPassword(secondaryAuth, novoEmail, credenciaisForm.novaSenha);
+      const nomeColecao = await detectarColecaoUsuarios();
+
+      const novoPerfil: UsuarioSistema = {
+        id: novoUserCredential.user.uid,
+        uid: novoUserCredential.user.uid,
+        usuario: novoLogin,
+        email: novoEmail,
+        nome: novoNome,
         tipo: "caixa",
         ativo: true,
       };
 
-      const docRef = await addDoc(ref, novoUsuario);
+      await setDoc(doc(db, nomeColecao, novoUserCredential.user.uid), novoPerfil, { merge: true });
+      await signOut(secondaryAuth);
 
-      setUsuarios((prev) => [...prev, { ...novoUsuario, id: docRef.id }]);
-      setCredenciaisForm({ usuarioAtual: "", senhaAtual: "", novoUsuario: "", novaSenha: "", confirmarSenha: "" });
+      setUsuarios((prev) => [...prev.filter((item) => item.uid !== novoPerfil.uid), novoPerfil]);
+      setCredenciaisForm({
+        usuarioAtual: "",
+        senhaAtual: "",
+        novoUsuario: "",
+        novoNome: "",
+        novaSenha: "",
+        confirmarSenha: "",
+      });
       setMensagem("Novo usuário criado com sucesso.");
-    } catch (error) {
+    } catch (error: any) {
       console.error("Erro ao salvar usuário:", error);
-      setErroCredenciais("Erro ao salvar usuário no banco.");
+
+      if (error?.code === "auth/email-already-in-use") {
+        setErroCredenciais("Esse usuário já existe.");
+      } else if (error?.code === "auth/weak-password") {
+        setErroCredenciais("A nova senha precisa ter pelo menos 6 caracteres.");
+      } else if (error?.code === "auth/invalid-credential" || error?.code === "auth/wrong-password") {
+        setErroCredenciais("Senha atual incorreta.");
+      } else {
+        setErroCredenciais("Erro ao salvar usuário no banco.");
+      }
     }
   }
 
@@ -865,93 +958,6 @@ export default function App() {
     setMensagem("Fechamento removido.");
   }
 
-  function exportarExcelMesSelecionado() {
-    const vendasMes = vendas
-      .filter((v) => v.data.startsWith(mesReferencia))
-      .sort((a, b) => a.data.localeCompare(b.data))
-      .map((v) => ({
-        Data: v.data,
-        Infinity: v.infinity,
-        Banese: v.banese,
-        SumUp: v.sumup,
-        Dinheiro: v.dinheiro,
-        Outros: v.outros,
-        "Despesa Rápida": v.despesaRapida || 0,
-        "Motivo da Despesa": v.motivoDespesa || "",
-        "Dinheiro Líquido": (v.dinheiro || 0) - (v.despesaRapida || 0),
-        Observação: v.observacao || "",
-        "Total do Dia": v.infinity + v.banese + v.sumup + v.dinheiro + v.outros,
-      }));
-
-    const sangriasMes = sangrias
-      .filter((s) => s.data.startsWith(mesReferencia))
-      .sort((a, b) => a.data.localeCompare(b.data))
-      .map((s) => ({
-        Data: s.data,
-        Categoria: s.categoria,
-        Descrição: s.descricao,
-        Valor: s.valor,
-      }));
-
-    const fechamentosMes = fechamentos
-      .filter((f) => f.data.startsWith(mesReferencia))
-      .sort((a, b) => a.data.localeCompare(b.data))
-      .map((f) => ({
-        Data: f.data,
-        "Fundo de Caixa": f.fundoCaixa,
-        "Vendas em Dinheiro": f.vendasDinheiro,
-        "Vendas em Cartão": f.vendasCartao,
-        "Vendas Outras": f.vendasOutras,
-        "Total de Vendas": f.totalVendas,
-        Sangrias: f.sangrias,
-        "Caixa Esperado": f.caixaEsperado,
-        "Caixa Real": f.caixaReal,
-        Diferença: f.diferenca,
-        Observação: f.observacao || "",
-        "Criado em": f.criadoEm,
-      }));
-
-    const fluxoMes = contasFluxo
-      .filter(
-        (c) =>
-          c.vencimento.startsWith(mesReferencia) ||
-          (c.dataPagamento && c.dataPagamento.startsWith(mesReferencia))
-      )
-      .sort((a, b) => a.vencimento.localeCompare(b.vencimento))
-      .map((c) => ({
-        Descrição: c.descricao,
-        Categoria: c.categoria,
-        Tipo: c.tipo,
-        Valor: c.valor,
-        Vencimento: c.vencimento,
-        Status: c.status,
-        "Forma de Pagamento": c.formaPagamento,
-        "Data Pagamento": c.dataPagamento || "",
-      }));
-
-    const resumo = [
-      {
-        Mês: nomeMesSelecionado,
-        "Total de Vendas": vendasMes.reduce((acc, item) => acc + Number(item["Total do Dia"] || 0), 0),
-        "Total de Sangrias": sangriasMes.reduce((acc, item) => acc + Number(item.Valor || 0), 0),
-        "Total Despesas Financeiras": fluxoMes
-          .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
-          .reduce((acc, item) => acc + Number(item.Valor || 0), 0),
-        "Dias com Caixa": vendasMes.length,
-      },
-    ];
-
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(resumo), "Resumo");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(vendasMes), "Caixa Diário");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sangriasMes), "Sangrias");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fechamentosMes), "Fechamentos");
-    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fluxoMes), "Fluxo Financeiro");
-
-    XLSX.writeFileXLSX(workbook, `caixa-${mesReferencia}.xlsx`);
-    setMensagem(`Excel do mês ${nomeMesSelecionado} exportado com sucesso.`);
-  }
-
   function exportarBackup() {
     const dados = { vendas, sangrias, contasFluxo, fechamentos, fundoCaixa };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
@@ -983,17 +989,32 @@ export default function App() {
     reader.readAsText(file);
   }
 
+  if (!authPronto) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4 md:p-8">
+        <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
+          Carregando acesso seguro...
+        </div>
+      </div>
+    );
+  }
+
   if (!logado) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4 md:p-8">
         <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-8 shadow-sm">
           <div className="mb-6">
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">Gestão Cidade Mãe</h1>
-            <p className="mt-2 text-sm text-slate-600">Entre para acessar o sistema.</p>
+            <p className="mt-2 text-sm text-slate-600">Entre para acessar o sistema com login seguro.</p>
           </div>
           <div className="space-y-4">
-            <Campo label="Usuário">
-              <Input type="text" value={loginForm.usuario} onChange={(e) => setLoginForm({ ...loginForm, usuario: e.target.value })} />
+            <Campo label="E-mail ou usuário">
+              <Input
+                type="text"
+                value={loginForm.usuario}
+                onChange={(e) => setLoginForm({ ...loginForm, usuario: e.target.value.toLowerCase() })}
+                placeholder="Ex.: admin@cidademae.com"
+              />
             </Campo>
             <Campo label="Senha">
               <Input
@@ -1003,12 +1024,13 @@ export default function App() {
               />
             </Campo>
             {erroLogin ? <div className="text-sm text-red-600">{erroLogin}</div> : null}
+            <div className="text-xs text-slate-500">Entre com o e-mail cadastrado no Firebase Authentication. Para usuários criados dentro do sistema, use o login curto.</div>
             <div className="pt-2">
               <Botao onClick={entrar}>Entrar</Botao>
             </div>
           </div>
           <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
-            Usuários cadastrados: <strong>{usuarios.length}</strong>
+            Login protegido por Firebase Authentication.
           </div>
         </div>
       </div>
@@ -1030,8 +1052,13 @@ export default function App() {
                   Caixa diário separado do financeiro mensal, com fechamento do dia, metas, histórico e automação de sangria.
                 </p>
               </div>
-              <div className="flex flex-wrap gap-3">
-                <Botao variante="secundario" onClick={exportarExcelMesSelecionado}>Exportar Excel do mês</Botao>
+              <div className="flex flex-wrap items-center gap-3">
+                {usuarioLogado ? (
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                    Usuário: <strong className="text-slate-900">{usuarioLogado.nome}</strong>
+                    <span className="ml-2 text-xs uppercase text-slate-500">{usuarioLogado.tipo}</span>
+                  </div>
+                ) : null}
                 <Botao variante="secundario" onClick={exportarBackup}>Exportar backup</Botao>
                 <label className="cursor-pointer rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                   Importar backup
@@ -1088,22 +1115,8 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, -1))}>
-                Mês anterior
-              </Botao>
-              <Input
-                type="month"
-                value={mesReferencia}
-                onChange={(e) => setMesReferencia(e.target.value)}
-                className="w-auto min-w-[170px]"
-              />
-              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, 1))}>
-                Próximo mês
-              </Botao>
-              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
-                Período: <strong className="text-slate-800">{periodo}</strong> • Mês: <strong className="text-slate-800 capitalize">{nomeMesSelecionado}</strong>
-              </div>
+            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
+              Período selecionado: <strong className="text-slate-800">{periodo}</strong>
             </div>
           </div>
 
@@ -1117,12 +1130,12 @@ export default function App() {
             <Bloco titulo="Desp. rápidas" valor={moeda(totalDespesasCaixa)} subtitulo="Mexem no caixa" />
             <Bloco titulo="Desp. financeiras" valor={moeda(totalDespesasFinanceiras)} subtitulo="Fluxo mensal" />
             <Bloco titulo="Fundo de caixa" valor={moeda(fundoCaixaNumero)} />
-            <Bloco titulo="Total" valor={moeda(totalLiquido)} subtitulo="Vendas - despesas financeiras pagas" destaque />
+            <Bloco titulo="Total" valor={moeda(lucro)} destaque />
           </div>
 
           <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr_0.8fr]">
             
-            <Card titulo={editandoVendaId ? "Editar Caixa do Dia" : "Lançar Caixa do Dia"}>
+            <Card titulo={editandoVendaId ? "Editar caixa do dia" : "Lançar Caixa do Dia"}>
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                     <Campo label="Data">
                       <Input type="date" value={vendaForm.data} onChange={(e) => setVendaForm({ ...vendaForm, data: e.target.value })} />
@@ -1214,7 +1227,7 @@ export default function App() {
                       <div className="h-4 rounded-full bg-indigo-600 transition-all" style={{ width: `${percentualMetaMensal}%` }} />
                     </div>
                     <div className="mt-2 text-sm font-medium text-slate-700">{percentualMetaMensal.toFixed(0)}%</div>
-                    <div className="mt-1 text-xs text-slate-500">Vendas do mês selecionado: {moeda(totalVendasMes)}</div>
+                    <div className="mt-1 text-xs text-slate-500">Vendas do mês atual: {moeda(totalVendasMes)}</div>
                   </div>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
@@ -1385,7 +1398,10 @@ export default function App() {
                       <Input type="password" value={credenciaisForm.senhaAtual} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, senhaAtual: e.target.value })} />
                     </Campo>
                     <Campo label="Novo usuário">
-                      <Input type="text" value={credenciaisForm.novoUsuario} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoUsuario: e.target.value })} />
+                      <Input type="text" value={credenciaisForm.novoUsuario} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoUsuario: e.target.value.toLowerCase() })} placeholder="Ex.: maria" />
+                    </Campo>
+                    <Campo label="Nome do usuário">
+                      <Input type="text" value={credenciaisForm.novoNome} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoNome: e.target.value })} placeholder="Ex.: Maria" />
                     </Campo>
                     <Campo label="Nova senha">
                       <Input type="password" value={credenciaisForm.novaSenha} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novaSenha: e.target.value })} />
