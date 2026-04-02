@@ -3,12 +3,12 @@ import { getAuth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCvo-s3ZhDuthe_xW8ypv2IejYLWCLd4",
-  authDomain: "cidademae-gestao.firebaseapp.com",
-  projectId: "cidademae-gestao",
-  storageBucket: "cidademae-gestao.firebasestorage.app",
-  messagingSenderId: "366462510169",
-  appId: "1:366462510169:web:ea6ee3e56dd2199843d48",
+  apiKey: "COLE_A_APIKEY_DA_TELA",
+  authDomain: "COLE_O_AUTHDOMAIN_DA_TELA",
+  projectId: "COLE_O_PROJECTID_DA_TELA",
+  storageBucket: "COLE_O_STORAGEBUCKET_DA_TELA",
+  messagingSenderId: "COLE_O_MESSAGINGSENDERID_DA_TELA",
+  appId: "COLE_O_APPID_DA_TELA",
 };
 
 const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
