@@ -5,9 +5,7 @@ import {
   setDoc,
   collection,
   getDocs,
-  addDoc,
-  query,
-  where
+  addDoc
 } from "firebase/firestore";
 import { db } from "./firebase";
 
@@ -107,10 +105,8 @@ const STORAGE = "gestao_cidade_mae_v4";
 const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v4";
 const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v4";
 const AUTH_STORAGE = "gestao_cidade_mae_auth_v4";
-const CREDENCIAIS_STORAGE = "gestao_cidade_mae_credenciais_v4";
 const FUNDO_CAIXA_STORAGE = "gestao_cidade_mae_fundo_caixa_v2";
 
-const USUARIOS_PADRAO = [{ usuario: "admin", senha: "1234" }];
 
 function Bloco({
   titulo,
