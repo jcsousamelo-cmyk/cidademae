@@ -320,15 +320,8 @@ export default function App() {
   });
 
   async function detectarColecaoUsuarios() {
-    const nomes = ["usuarios", "Usuários"] as const;
-
-    for (const nome of nomes) {
-      const snap = await getDocs(collection(db, nome));
-      if (!snap.empty) return nome;
-    }
-
-    return "usuarios" as const;
-  }
+  return "usuarios" as const;
+}
 
   async function carregarUsuariosFirebase() {
     const nomeColecao = await detectarColecaoUsuarios();
@@ -369,16 +362,16 @@ export default function App() {
       lista.find((item) => item.usuario === usuarioPorEmail);
 
     if (!perfil) {
-      perfil = {
-        id: user.uid,
-        uid: user.uid,
-        usuario: usuarioPorEmail || user.uid,
-        email: user.email || loginParaEmail(user.uid),
-        nome: user.displayName || usuarioPorEmail || "Usuário",
-        tipo: "caixa",
-        ativo: true,
-      };
-    }
+  perfil = {
+    id: user.uid,
+    uid: user.uid,
+    usuario: usuarioPorEmail || user.uid,
+    email: user.email || loginParaEmail(user.uid),
+    nome: user.displayName || usuarioPorEmail || "Usuário",
+    tipo: lista.length === 0 ? "admin" : "caixa",
+    ativo: true,
+  };
+}
 
     const perfilNormalizado: UsuarioSistema = {
       ...perfil,
@@ -629,44 +622,66 @@ export default function App() {
   }, [mensagem]);
 
   async function entrar() {
-    setErroLogin("");
+  setErroLogin("");
 
-    const loginDigitado = normalizarLogin(loginForm.usuario);
-    const senhaDigitada = loginForm.senha;
+  const loginDigitado = normalizarLogin(loginForm.usuario);
+  const senhaDigitada = loginForm.senha;
 
-    if (!loginDigitado || !senhaDigitada) {
-      setErroLogin("Informe e-mail/usuário e senha.");
+  if (!loginDigitado || !senhaDigitada) {
+    setErroLogin("Informe e-mail/usuário e senha.");
+    return;
+  }
+
+  const tentativas = loginPodeSerEmail(loginDigitado)
+    ? [loginDigitado]
+    : [loginParaEmail(loginDigitado)];
+
+  let ultimoErro: any = null;
+
+  for (const emailTentativa of tentativas) {
+    try {
+      await signInWithEmailAndPassword(auth, emailTentativa, senhaDigitada);
+      setLoginForm({ usuario: "", senha: "" });
       return;
-    }
-
-    const tentativas = loginPodeSerEmail(loginDigitado)
-      ? [loginDigitado]
-      : [loginParaEmail(loginDigitado)];
-
-    let ultimoErro: any = null;
-
-    for (const emailTentativa of tentativas) {
-      try {
-        await signInWithEmailAndPassword(auth, emailTentativa, senhaDigitada);
-        setLoginForm({ usuario: "", senha: "" });
-        return;
-      } catch (error: any) {
-        ultimoErro = error;
-      }
-    }
-
-    console.error("Erro ao fazer login:", ultimoErro);
-    if (
-      ultimoErro?.code === "auth/invalid-credential" ||
-      ultimoErro?.code === "auth/wrong-password" ||
-      ultimoErro?.code === "auth/user-not-found" ||
-      ultimoErro?.code === "auth/invalid-email"
-    ) {
-      setErroLogin("E-mail/usuário ou senha inválidos.");
-    } else {
-      setErroLogin("Não foi possível entrar agora.");
+    } catch (error: any) {
+      ultimoErro = error;
     }
   }
+
+  console.error("Erro ao fazer login:", ultimoErro);
+
+  if (
+    ultimoErro?.code === "auth/invalid-credential" ||
+    ultimoErro?.code === "auth/wrong-password" ||
+    ultimoErro?.code === "auth/user-not-found" ||
+    ultimoErro?.code === "auth/invalid-email"
+  ) {
+    setErroLogin("E-mail/usuário ou senha inválidos.");
+    return;
+  }
+
+  if (ultimoErro?.code === "auth/too-many-requests") {
+    setErroLogin("Muitas tentativas. Aguarde alguns minutos e tente novamente.");
+    return;
+  }
+
+  if (ultimoErro?.code === "auth/network-request-failed") {
+    setErroLogin("Falha de rede. Verifique a internet.");
+    return;
+  }
+
+  if (ultimoErro?.code === "auth/operation-not-allowed") {
+    setErroLogin("Login por e-mail/senha não está habilitado no Firebase.");
+    return;
+  }
+
+  if (ultimoErro?.code === "auth/unauthorized-domain") {
+    setErroLogin("Domínio não autorizado no Firebase Authentication.");
+    return;
+  }
+
+  setErroLogin(`Erro: ${ultimoErro?.code || "desconhecido"}`);
+}
 
   async function sair() {
     await signOut(auth);
@@ -1024,7 +1039,7 @@ export default function App() {
               />
             </Campo>
             {erroLogin ? <div className="text-sm text-red-600">{erroLogin}</div> : null}
-            <div className="text-xs text-slate-500">Entre com o e-mail cadastrado no Firebase Authentication. Para usuários criados dentro do sistema, use o login curto.</div>
+            <div className="text-xs text-slate-500">Entre com o e-mail cadastrado no Firebase Authentication. Para usuarios criados dentro do sistema, use o login curto.</div>
             <div className="pt-2">
               <Botao onClick={entrar}>Entrar</Botao>
             </div>
