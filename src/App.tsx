@@ -68,6 +68,16 @@ type FechamentoDiario = {
   criadoEm: string;
 };
 
+
+type UsuarioSistema = {
+  id?: string;
+  usuario: string;
+  senha: string;
+  nome: string;
+  tipo: string;
+  ativo: boolean;
+};
+
 const hoje = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
 
@@ -269,7 +279,8 @@ export default function App() {
   const [loginForm, setLoginForm] = useState({ usuario: "", senha: "" });
   const [erroLogin, setErroLogin] = useState("");
 
-  const [usuarios, setUsuarios] = useState<{ usuario: string; senha: string }[]>(USUARIOS_PADRAO);
+  const [usuarios, setUsuarios] = useState<UsuarioSistema[]>([]);
+  const [usuarioLogado, setUsuarioLogado] = useState<UsuarioSistema | null>(null);
 
   const [credenciaisForm, setCredenciaisForm] = useState({
     usuarioAtual: "",
@@ -304,6 +315,34 @@ export default function App() {
     categoria: "Operacional",
     tipo: "Financeiro" as TipoDespesa,
   });
+
+  async function obterColecaoUsuarios() {
+    const nomes = ["usuarios", "Usuários"] as const;
+
+    for (const nome of nomes) {
+      const ref = collection(db, nome);
+      const snap = await getDocs(ref);
+      if (!snap.empty) {
+        return { ref, snap, nome };
+      }
+    }
+
+    const refPadrao = collection(db, "Usuários");
+    const snapPadrao = await getDocs(refPadrao);
+    return { ref: refPadrao, snap: snapPadrao, nome: "Usuários" as const };
+  }
+
+  async function carregarUsuariosFirebase() {
+    const { snap } = await obterColecaoUsuarios();
+
+    const lista: UsuarioSistema[] = snap.docs.map((docItem) => ({
+      id: docItem.id,
+      ...(docItem.data() as Omit<UsuarioSistema, "id">),
+    }));
+
+    setUsuarios(lista);
+    return lista;
+  }
 
   function limparFormularioVenda() {
     setVendaForm({
@@ -457,18 +496,24 @@ export default function App() {
           if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
         }
 
-        const credenciaisSalvas = localStorage.getItem(CREDENCIAIS_STORAGE);
-        if (credenciaisSalvas) {
-          try {
-            const parsed = JSON.parse(credenciaisSalvas);
-            setUsuarios(parsed.length ? parsed : USUARIOS_PADRAO);
-          } catch {
-            setUsuarios(USUARIOS_PADRAO);
-          }
+        try {
+          await carregarUsuariosFirebase();
+        } catch (error) {
+          console.error("Erro ao carregar usuários:", error);
+          setUsuarios([]);
         }
 
         const auth = localStorage.getItem(AUTH_STORAGE);
+        const usuarioSalvo = localStorage.getItem("usuario_logado");
         setLogado(auth === "true");
+
+        if (usuarioSalvo) {
+          try {
+            setUsuarioLogado(JSON.parse(usuarioSalvo));
+          } catch {
+            setUsuarioLogado(null);
+          }
+        }
       } catch (error) {
         console.error("Erro ao carregar dados:", error);
 
@@ -490,18 +535,24 @@ export default function App() {
         const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
         if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
 
-        const credenciaisSalvas = localStorage.getItem(CREDENCIAIS_STORAGE);
-        if (credenciaisSalvas) {
-          try {
-            const parsed = JSON.parse(credenciaisSalvas);
-            setUsuarios(parsed.length ? parsed : USUARIOS_PADRAO);
-          } catch {
-            setUsuarios(USUARIOS_PADRAO);
-          }
+        try {
+          await carregarUsuariosFirebase();
+        } catch (error) {
+          console.error("Erro ao carregar usuários:", error);
+          setUsuarios([]);
         }
 
         const auth = localStorage.getItem(AUTH_STORAGE);
+        const usuarioSalvo = localStorage.getItem("usuario_logado");
         setLogado(auth === "true");
+
+        if (usuarioSalvo) {
+          try {
+            setUsuarioLogado(JSON.parse(usuarioSalvo));
+          } catch {
+            setUsuarioLogado(null);
+          }
+        }
       } finally {
         setLoaded(true);
       }
@@ -535,9 +586,8 @@ export default function App() {
     localStorage.setItem(STORAGE, JSON.stringify({ vendas, sangrias, contasFluxo, fechamentos }));
     localStorage.setItem(META_DIARIA_STORAGE, metaDiaria);
     localStorage.setItem(META_MENSAL_STORAGE, metaMensal);
-    localStorage.setItem(CREDENCIAIS_STORAGE, JSON.stringify(usuarios));
     localStorage.setItem(FUNDO_CAIXA_STORAGE, fundoCaixa);
-  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, usuarios, fundoCaixa, loaded]);
+  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, fundoCaixa, loaded]);
 
   useEffect(() => {
     if (!mensagem) return;
@@ -545,35 +595,93 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [mensagem]);
 
-  function entrar() {
-    const usuarioEncontrado = usuarios.find((u) => u.usuario === loginForm.usuario && u.senha === loginForm.senha);
-    if (usuarioEncontrado) {
-      setLogado(true);
-      localStorage.setItem(AUTH_STORAGE, "true");
-      setErroLogin("");
-      setLoginForm({ usuario: "", senha: "" });
-    } else {
-      setErroLogin("Usuário ou senha inválidos.");
+  async function entrar() {
+    setErroLogin("");
+
+    try {
+      const lista = await carregarUsuariosFirebase();
+
+      const usuarioEncontrado = lista.find(
+        (u) =>
+          u.usuario === loginForm.usuario &&
+          u.senha === loginForm.senha &&
+          u.ativo === true
+      );
+
+      if (usuarioEncontrado) {
+        setLogado(true);
+        setUsuarioLogado(usuarioEncontrado);
+        localStorage.setItem(AUTH_STORAGE, "true");
+        localStorage.setItem("usuario_logado", JSON.stringify(usuarioEncontrado));
+        setErroLogin("");
+        setLoginForm({ usuario: "", senha: "" });
+      } else {
+        setErroLogin("Usuário ou senha inválidos.");
+      }
+    } catch (error) {
+      console.error("Erro ao fazer login:", error);
+      setErroLogin("Erro ao conectar com o banco de dados.");
     }
   }
 
   function sair() {
     setLogado(false);
+    setUsuarioLogado(null);
     localStorage.removeItem(AUTH_STORAGE);
+    localStorage.removeItem("usuario_logado");
     setMensagem("Sessão encerrada.");
   }
 
-  function salvarCredenciais() {
+  async function salvarCredenciais() {
     setErroCredenciais("");
-    const usuarioValido = usuarios.find((u) => u.usuario === credenciaisForm.usuarioAtual && u.senha === credenciaisForm.senhaAtual);
-    if (!usuarioValido) return setErroCredenciais("Usuário atual ou senha atual incorretos.");
-    if (!credenciaisForm.novoUsuario || !credenciaisForm.novaSenha) return setErroCredenciais("Preencha o novo usuário e a nova senha.");
-    if (credenciaisForm.novaSenha !== credenciaisForm.confirmarSenha) return setErroCredenciais("A confirmação da nova senha não confere.");
-    const existe = usuarios.some((u) => u.usuario === credenciaisForm.novoUsuario);
-    if (existe) return setErroCredenciais("Esse usuário já existe.");
-    setUsuarios((prev) => [...prev, { usuario: credenciaisForm.novoUsuario, senha: credenciaisForm.novaSenha }]);
-    setCredenciaisForm({ usuarioAtual: "", senhaAtual: "", novoUsuario: "", novaSenha: "", confirmarSenha: "" });
-    setMensagem("Novo usuário criado com sucesso.");
+
+    const usuarioValido =
+      usuarioLogado &&
+      usuarioLogado.usuario === credenciaisForm.usuarioAtual &&
+      usuarioLogado.senha === credenciaisForm.senhaAtual;
+
+    if (!usuarioValido) {
+      setErroCredenciais("Usuário atual ou senha atual incorretos.");
+      return;
+    }
+
+    if (!credenciaisForm.novoUsuario || !credenciaisForm.novaSenha) {
+      setErroCredenciais("Preencha o novo usuário e a nova senha.");
+      return;
+    }
+
+    if (credenciaisForm.novaSenha !== credenciaisForm.confirmarSenha) {
+      setErroCredenciais("A confirmação da nova senha não confere.");
+      return;
+    }
+
+    try {
+      const { ref } = await obterColecaoUsuarios();
+      const lista = await carregarUsuariosFirebase();
+
+      const existe = lista.some((u) => u.usuario === credenciaisForm.novoUsuario);
+      if (existe) {
+        setErroCredenciais("Esse usuário já existe.");
+        return;
+      }
+
+      const novoUsuario: UsuarioSistema = {
+        usuario: credenciaisForm.novoUsuario,
+        senha: credenciaisForm.novaSenha,
+        nome: credenciaisForm.novoUsuario,
+        tipo: "caixa",
+        ativo: true,
+      };
+
+      const docRef = await addDoc(ref, novoUsuario);
+
+      setUsuarios((prev) => [...prev, { ...novoUsuario, id: docRef.id }]);
+      setCredenciaisForm({ usuarioAtual: "", senhaAtual: "", novoUsuario: "", novaSenha: "", confirmarSenha: "" });
+      setMensagem("Novo usuário criado com sucesso.");
+    } catch (error) {
+      console.error("Erro ao salvar usuário:", error);
+      setErroCredenciais("Erro ao salvar usuário no banco.");
+    }
   }
 
   function salvarVenda() {
