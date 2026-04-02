@@ -1,8 +1,18 @@
 
-import { doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  doc,
+  getDoc,
+  setDoc,
+  collection,
+  getDocs,
+  addDoc,
+  query,
+  where
+} from "firebase/firestore";
 import { db } from "./firebase";
 
 import React, { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
 type Venda = {
   id: string;
@@ -60,6 +70,22 @@ type FechamentoDiario = {
 
 const hoje = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+const formatoMes = (data: Date) =>
+  `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, "0")}`;
+
+const inicioMes = (mesRef: string) => new Date(`${mesRef}-01T00:00:00`);
+const nomeMesAno = (mesRef: string) =>
+  inicioMes(mesRef).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
+
+const navegarMesRef = (mesRef: string, delta: number) => {
+  const data = inicioMes(mesRef);
+  data.setMonth(data.getMonth() + delta);
+  return formatoMes(data);
+};
 
 const moeda = (v: number) =>
   new Intl.NumberFormat("pt-BR", {
@@ -224,6 +250,7 @@ function GraficoBarras({ titulo, dados }: { titulo: string; dados: Array<{ label
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo" | "fechamentos">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
+  const [mesReferencia, setMesReferencia] = useState(formatoMes(new Date()));
 
   const [vendas, setVendas] = useState<Venda[]>([]);
   const [sangrias, setSangrias] = useState<Sangria[]>([]);
@@ -306,14 +333,14 @@ export default function App() {
       fim.setHours(23, 59, 59, 999);
       return d >= inicio && d <= fim;
     }
-    return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear();
+    return formatoMes(d) === mesReferencia;
   }
 
-  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo]);
-  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo]);
+  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo, mesReferencia]);
+  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo, mesReferencia]);
   const contasPeriodo = useMemo(
     () => contasFluxo.filter((c) => dentroPeriodo(c.vencimento) || (c.dataPagamento && dentroPeriodo(c.dataPagamento))),
-    [contasFluxo, periodo]
+    [contasFluxo, periodo, mesReferencia]
   );
 
   const totalVendas = useMemo(
@@ -332,12 +359,8 @@ export default function App() {
   const percentualMeta = metaNumero > 0 ? Math.min((totalVendas / metaNumero) * 100, 100) : 0;
 
   const vendasMesAtual = useMemo(() => {
-    const agora = new Date();
-    return vendas.filter((v) => {
-      const d = new Date(`${v.data}T00:00:00`);
-      return d.getMonth() === agora.getMonth() && d.getFullYear() === agora.getFullYear();
-    });
-  }, [vendas]);
+    return vendas.filter((v) => v.data.startsWith(mesReferencia));
+  }, [vendas, mesReferencia]);
 
   const totalVendasMes = useMemo(
     () => vendasMesAtual.reduce((acc, v) => acc + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros, 0),
@@ -373,9 +396,10 @@ export default function App() {
     return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
   }, [contasPagasFinanceiras]);
 
-  const lucro = totalVendas - totalDespesasFinanceiras;
+  const totalLiquido = totalVendas - totalDespesasFinanceiras;
+  const nomeMesSelecionado = nomeMesAno(mesReferencia);
   const alertaGastoAlto = totalDespesasFinanceiras > totalVendas * 0.8 && totalVendas > 0;
-  const alertaLucroBaixo = lucro > 0 && lucro < totalVendas * 0.2;
+  const alertaLucroBaixo = totalLiquido > 0 && totalLiquido < totalVendas * 0.2;
   const principalCategoria = despesasPorCategoria.length > 0 ? despesasPorCategoria[0] : null;
   const alertaCategoriaPesada =
     principalCategoria ? principalCategoria[1] > totalDespesasFinanceiras * 0.4 && totalDespesasFinanceiras > 0 : false;
@@ -737,6 +761,93 @@ export default function App() {
     setMensagem("Fechamento removido.");
   }
 
+  function exportarExcelMesSelecionado() {
+    const vendasMes = vendas
+      .filter((v) => v.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((v) => ({
+        Data: v.data,
+        Infinity: v.infinity,
+        Banese: v.banese,
+        SumUp: v.sumup,
+        Dinheiro: v.dinheiro,
+        Outros: v.outros,
+        "Despesa Rápida": v.despesaRapida || 0,
+        "Motivo da Despesa": v.motivoDespesa || "",
+        "Dinheiro Líquido": (v.dinheiro || 0) - (v.despesaRapida || 0),
+        Observação: v.observacao || "",
+        "Total do Dia": v.infinity + v.banese + v.sumup + v.dinheiro + v.outros,
+      }));
+
+    const sangriasMes = sangrias
+      .filter((s) => s.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((s) => ({
+        Data: s.data,
+        Categoria: s.categoria,
+        Descrição: s.descricao,
+        Valor: s.valor,
+      }));
+
+    const fechamentosMes = fechamentos
+      .filter((f) => f.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((f) => ({
+        Data: f.data,
+        "Fundo de Caixa": f.fundoCaixa,
+        "Vendas em Dinheiro": f.vendasDinheiro,
+        "Vendas em Cartão": f.vendasCartao,
+        "Vendas Outras": f.vendasOutras,
+        "Total de Vendas": f.totalVendas,
+        Sangrias: f.sangrias,
+        "Caixa Esperado": f.caixaEsperado,
+        "Caixa Real": f.caixaReal,
+        Diferença: f.diferenca,
+        Observação: f.observacao || "",
+        "Criado em": f.criadoEm,
+      }));
+
+    const fluxoMes = contasFluxo
+      .filter(
+        (c) =>
+          c.vencimento.startsWith(mesReferencia) ||
+          (c.dataPagamento && c.dataPagamento.startsWith(mesReferencia))
+      )
+      .sort((a, b) => a.vencimento.localeCompare(b.vencimento))
+      .map((c) => ({
+        Descrição: c.descricao,
+        Categoria: c.categoria,
+        Tipo: c.tipo,
+        Valor: c.valor,
+        Vencimento: c.vencimento,
+        Status: c.status,
+        "Forma de Pagamento": c.formaPagamento,
+        "Data Pagamento": c.dataPagamento || "",
+      }));
+
+    const resumo = [
+      {
+        Mês: nomeMesSelecionado,
+        "Total de Vendas": vendasMes.reduce((acc, item) => acc + Number(item["Total do Dia"] || 0), 0),
+        "Total de Sangrias": sangriasMes.reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Total Despesas Financeiras": fluxoMes
+          .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
+          .reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Dias com Caixa": vendasMes.length,
+      },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(resumo), "Resumo");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(vendasMes), "Caixa Diário");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sangriasMes), "Sangrias");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fechamentosMes), "Fechamentos");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fluxoMes), "Fluxo Financeiro");
+
+    XLSX.writeFileXLSX(workbook, `caixa-${mesReferencia}.xlsx`);
+    setMensagem(`Excel do mês ${nomeMesSelecionado} exportado com sucesso.`);
+  }
+
   function exportarBackup() {
     const dados = { vendas, sangrias, contasFluxo, fechamentos, fundoCaixa };
     const blob = new Blob([JSON.stringify(dados, null, 2)], { type: "application/json" });
@@ -816,6 +927,7 @@ export default function App() {
                 </p>
               </div>
               <div className="flex flex-wrap gap-3">
+                <Botao variante="secundario" onClick={exportarExcelMesSelecionado}>Exportar Excel do mês</Botao>
                 <Botao variante="secundario" onClick={exportarBackup}>Exportar backup</Botao>
                 <label className="cursor-pointer rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                   Importar backup
@@ -872,8 +984,22 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
-              Período selecionado: <strong className="text-slate-800">{periodo}</strong>
+            <div className="flex flex-wrap items-center gap-3">
+              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, -1))}>
+                Mês anterior
+              </Botao>
+              <Input
+                type="month"
+                value={mesReferencia}
+                onChange={(e) => setMesReferencia(e.target.value)}
+                className="w-auto min-w-[170px]"
+              />
+              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, 1))}>
+                Próximo mês
+              </Botao>
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
+                Período: <strong className="text-slate-800">{periodo}</strong> • Mês: <strong className="text-slate-800 capitalize">{nomeMesSelecionado}</strong>
+              </div>
             </div>
           </div>
 
@@ -887,12 +1013,12 @@ export default function App() {
             <Bloco titulo="Desp. rápidas" valor={moeda(totalDespesasCaixa)} subtitulo="Mexem no caixa" />
             <Bloco titulo="Desp. financeiras" valor={moeda(totalDespesasFinanceiras)} subtitulo="Fluxo mensal" />
             <Bloco titulo="Fundo de caixa" valor={moeda(fundoCaixaNumero)} />
-            <Bloco titulo="Lucro" valor={moeda(lucro)} destaque />
+            <Bloco titulo="Total" valor={moeda(totalLiquido)} subtitulo="Vendas - despesas financeiras pagas" destaque />
           </div>
 
           <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr_0.8fr]">
             
-            <Card titulo={editandoVendaId ? "Editar venda" : "Lançar Caixa Dia"}>
+            <Card titulo={editandoVendaId ? "Editar Caixa do Dia" : "Lançar Caixa do Dia"}>
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
                     <Campo label="Data">
                       <Input type="date" value={vendaForm.data} onChange={(e) => setVendaForm({ ...vendaForm, data: e.target.value })} />
@@ -941,11 +1067,11 @@ export default function App() {
                     <div className="flex flex-wrap items-end gap-2">
                       {editandoVendaId ? (
                         <>
-                          <Botao onClick={atualizarVenda}>Atualizar venda</Botao>
+                          <Botao onClick={atualizarVenda}>Atualizar caixa do dia</Botao>
                           <Botao variante="secundario" onClick={limparFormularioVenda}>Cancelar</Botao>
                         </>
                       ) : (
-                        <Botao onClick={salvarVenda}>Salvar venda</Botao>
+                        <Botao onClick={salvarVenda}>Salvar caixa do dia</Botao>
                       )}
                     </div>
                   </div>
@@ -984,7 +1110,7 @@ export default function App() {
                       <div className="h-4 rounded-full bg-indigo-600 transition-all" style={{ width: `${percentualMetaMensal}%` }} />
                     </div>
                     <div className="mt-2 text-sm font-medium text-slate-700">{percentualMetaMensal.toFixed(0)}%</div>
-                    <div className="mt-1 text-xs text-slate-500">Vendas do mês atual: {moeda(totalVendasMes)}</div>
+                    <div className="mt-1 text-xs text-slate-500">Vendas do mês selecionado: {moeda(totalVendasMes)}</div>
                   </div>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
