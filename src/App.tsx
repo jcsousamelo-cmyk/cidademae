@@ -5,20 +5,12 @@ import {
   setDoc,
   collection,
   getDocs,
+  addDoc,
 } from "firebase/firestore";
-import { auth, db, secondaryAuth } from "./firebase";
-
-import {
-  createUserWithEmailAndPassword,
-  EmailAuthProvider,
-  onAuthStateChanged,
-  reauthenticateWithCredential,
-  signInWithEmailAndPassword,
-  signOut,
-} from "firebase/auth";
-import type { User } from "firebase/auth";
+import { db } from "./firebase";
 
 import React, { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 
 type Venda = {
   id: string;
@@ -27,6 +19,8 @@ type Venda = {
   banese: number;
   sumup: number;
   dinheiro: number;
+  dinheiroContado?: number;
+  fundoCaixaInformado?: number;
   outros: number;
   despesaRapida: number;
   motivoDespesa: string;
@@ -76,9 +70,8 @@ type FechamentoDiario = {
 
 type UsuarioSistema = {
   id?: string;
-  uid?: string;
   usuario: string;
-  email: string;
+  senha: string;
   nome: string;
   tipo: string;
   ativo: boolean;
@@ -87,31 +80,42 @@ type UsuarioSistema = {
 const hoje = () => new Date().toISOString().slice(0, 10);
 const uid = () => Math.random().toString(36).slice(2, 10);
 
+const formatoMes = (data: Date) =>
+  `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, "0")}`;
+
+const inicioMes = (mesRef: string) => new Date(`${mesRef}-01T00:00:00`);
+const nomeMesAno = (mesRef: string) =>
+  inicioMes(mesRef).toLocaleDateString("pt-BR", {
+    month: "long",
+    year: "numeric",
+  });
+
+const navegarMesRef = (mesRef: string, delta: number) => {
+  const data = inicioMes(mesRef);
+  data.setMonth(data.getMonth() + delta);
+  return formatoMes(data);
+};
+
 const moeda = (v: number) =>
   new Intl.NumberFormat("pt-BR", {
     style: "currency",
     currency: "BRL",
   }).format(v || 0);
 
+const calcularDinheiroVendido = (
+  dinheiroContado: number,
+  fundoCaixa: number,
+  sangria: number
+) => dinheiroContado - fundoCaixa + sangria;
+
+const calcularRetiradaFinal = (dinheiroContado: number, fundoCaixa: number) =>
+  dinheiroContado - fundoCaixa;
+
 const STORAGE = "gestao_cidade_mae_v4";
 const META_DIARIA_STORAGE = "gestao_cidade_mae_meta_diaria_v4";
 const META_MENSAL_STORAGE = "gestao_cidade_mae_meta_mensal_v4";
+const AUTH_STORAGE = "gestao_cidade_mae_auth_v4";
 const FUNDO_CAIXA_STORAGE = "gestao_cidade_mae_fundo_caixa_v2";
-
-const LOGIN_DOMAIN = "cidademae.local";
-
-const loginParaEmail = (login: string) => {
-  const valor = login.trim().toLowerCase();
-  if (!valor) return "";
-  if (valor.includes("@")) return valor;
-  return `${valor}@${LOGIN_DOMAIN}`;
-};
-
-const emailParaUsuario = (email: string) => email.split("@")[0] || "";
-
-const normalizarLogin = (valor: string) => valor.trim().toLowerCase();
-
-const loginPodeSerEmail = (valor: string) => normalizarLogin(valor).includes("@");
 
 function Bloco({
   titulo,
@@ -195,17 +199,6 @@ function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   );
 }
 
-function Textarea(props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  return (
-    <textarea
-      {...props}
-      className={`w-full rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm text-slate-900 outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200 ${
-        props.className || ""
-      }`}
-    />
-  );
-}
-
 function Botao({
   children,
   onClick,
@@ -261,13 +254,13 @@ function GraficoBarras({ titulo, dados }: { titulo: string; dados: Array<{ label
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo" | "fechamentos">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
+  const [mesReferencia, setMesReferencia] = useState(formatoMes(new Date()));
 
   const [vendas, setVendas] = useState<Venda[]>([]);
   const [sangrias, setSangrias] = useState<Sangria[]>([]);
   const [contasFluxo, setContasFluxo] = useState<ContaFluxo[]>([]);
   const [fechamentos, setFechamentos] = useState<FechamentoDiario[]>([]);
 
-  const [caixaReal, setCaixaReal] = useState("");
   const [fundoCaixa, setFundoCaixa] = useState("");
   const [loaded, setLoaded] = useState(false);
   const [mensagem, setMensagem] = useState("");
@@ -275,34 +268,30 @@ export default function App() {
   const [metaDiaria, setMetaDiaria] = useState("");
   const [metaMensal, setMetaMensal] = useState("");
 
-  const [authPronto, setAuthPronto] = useState(false);
   const [logado, setLogado] = useState(false);
   const [loginForm, setLoginForm] = useState({ usuario: "", senha: "" });
   const [erroLogin, setErroLogin] = useState("");
 
   const [usuarios, setUsuarios] = useState<UsuarioSistema[]>([]);
-  const [usuarioFirebase, setUsuarioFirebase] = useState<User | null>(null);
   const [usuarioLogado, setUsuarioLogado] = useState<UsuarioSistema | null>(null);
 
   const [credenciaisForm, setCredenciaisForm] = useState({
     usuarioAtual: "",
     senhaAtual: "",
     novoUsuario: "",
-    novoNome: "",
     novaSenha: "",
     confirmarSenha: "",
   });
   const [erroCredenciais, setErroCredenciais] = useState("");
 
   const [editandoVendaId, setEditandoVendaId] = useState<string | null>(null);
-  const [fechamentoObservacao, setFechamentoObservacao] = useState("");
 
   const [vendaForm, setVendaForm] = useState({
     data: hoje(),
     infinity: "",
     banese: "",
     sumup: "",
-    dinheiro: "",
+    dinheiroContado: "",
     outros: "",
     despesaRapida: "",
     motivoDespesa: "",
@@ -319,114 +308,32 @@ export default function App() {
     tipo: "Financeiro" as TipoDespesa,
   });
 
-  async function detectarColecaoUsuarios() {
-  return "usuarios" as const;
-}
+  async function obterColecaoUsuarios() {
+    const nomes = ["usuarios", "Usuários"] as const;
+
+    for (const nome of nomes) {
+      const ref = collection(db, nome);
+      const snap = await getDocs(ref);
+      if (!snap.empty) {
+        return { ref, snap, nome };
+      }
+    }
+
+    const refPadrao = collection(db, "Usuários");
+    const snapPadrao = await getDocs(refPadrao);
+    return { ref: refPadrao, snap: snapPadrao, nome: "Usuários" as const };
+  }
 
   async function carregarUsuariosFirebase() {
-    const nomeColecao = await detectarColecaoUsuarios();
-    const snap = await getDocs(collection(db, nomeColecao));
+    const { snap } = await obterColecaoUsuarios();
 
-    const lista: UsuarioSistema[] = snap.docs.map((item) => {
-      const data = item.data() as Partial<UsuarioSistema> & {
-        usuario?: string;
-        email?: string;
-        nome?: string;
-        tipo?: string;
-        ativo?: boolean;
-        uid?: string;
-      };
-
-      return {
-        id: item.id,
-        uid: data.uid || item.id,
-        usuario: data.usuario || emailParaUsuario(data.email || ""),
-        email: data.email || loginParaEmail(data.usuario || item.id),
-        nome: data.nome || data.usuario || emailParaUsuario(data.email || ""),
-        tipo: data.tipo || "caixa",
-        ativo: data.ativo !== false,
-      };
-    });
+    const lista: UsuarioSistema[] = snap.docs.map((docItem) => ({
+      id: docItem.id,
+      ...(docItem.data() as Omit<UsuarioSistema, "id">),
+    }));
 
     setUsuarios(lista);
-    return { nomeColecao, lista };
-  }
-
-  async function carregarOuCriarPerfilUsuario(user: User) {
-    const { nomeColecao, lista } = await carregarUsuariosFirebase();
-    const usuarioPorEmail = emailParaUsuario(user.email || "");
-
-    let perfil =
-      lista.find((item) => item.uid === user.uid) ||
-      lista.find((item) => item.email === (user.email || "")) ||
-      lista.find((item) => item.usuario === usuarioPorEmail);
-
-    if (!perfil) {
-  perfil = {
-    id: user.uid,
-    uid: user.uid,
-    usuario: usuarioPorEmail || user.uid,
-    email: user.email || loginParaEmail(user.uid),
-    nome: user.displayName || usuarioPorEmail || "Usuário",
-    tipo: lista.length === 0 ? "admin" : "caixa",
-    ativo: true,
-  };
-}
-
-    const perfilNormalizado: UsuarioSistema = {
-      ...perfil,
-      id: user.uid,
-      uid: user.uid,
-      usuario: perfil.usuario || usuarioPorEmail || user.uid,
-      email: user.email || perfil.email || loginParaEmail(perfil.usuario || user.uid),
-      nome: perfil.nome || perfil.usuario || usuarioPorEmail || "Usuário",
-      tipo: perfil.tipo || "caixa",
-      ativo: perfil.ativo !== false,
-    };
-
-    await setDoc(doc(db, nomeColecao, user.uid), perfilNormalizado, { merge: true });
-    setUsuarioLogado(perfilNormalizado);
-    setUsuarios((prev) => {
-      const semAtual = prev.filter((item) => item.uid !== user.uid);
-      return [...semAtual, perfilNormalizado];
-    });
-
-    return perfilNormalizado;
-  }
-
-  async function carregarDadosSistema() {
-    const ref = doc(db, "gestao", "cidade-mae");
-    const snap = await getDoc(ref);
-
-    if (snap.exists()) {
-      const dados = snap.data();
-      setVendas(dados.vendas || []);
-      setSangrias(dados.sangrias || []);
-      setContasFluxo(dados.contasFluxo || []);
-      setFechamentos(dados.fechamentos || []);
-      setMetaDiaria(dados.metaDiaria || "");
-      setMetaMensal(dados.metaMensal || "");
-      setFundoCaixa(dados.fundoCaixa || "");
-      return;
-    }
-
-    const data = localStorage.getItem(STORAGE);
-    if (data) {
-      const parsed = JSON.parse(data);
-      setVendas(parsed.vendas || []);
-      setSangrias(parsed.sangrias || []);
-      setContasFluxo(parsed.contasFluxo || []);
-      setFechamentos(parsed.fechamentos || []);
-    }
-
-    const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
-    if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
-
-    const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
-    if (metaMensalSalva) setMetaMensal(metaMensalSalva);
-
-    const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
-    if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
+    return lista;
   }
 
   function limparFormularioVenda() {
@@ -435,7 +342,7 @@ export default function App() {
       infinity: "",
       banese: "",
       sumup: "",
-      dinheiro: "",
+      dinheiroContado: "",
       outros: "",
       despesaRapida: "",
       motivoDespesa: "",
@@ -457,14 +364,14 @@ export default function App() {
       fim.setHours(23, 59, 59, 999);
       return d >= inicio && d <= fim;
     }
-    return d.getMonth() === h.getMonth() && d.getFullYear() === h.getFullYear();
+    return formatoMes(d) === mesReferencia;
   }
 
-  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo]);
-  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo]);
+  const vendasPeriodo = useMemo(() => vendas.filter((v) => dentroPeriodo(v.data)), [vendas, periodo, mesReferencia]);
+  const sangriasPeriodo = useMemo(() => sangrias.filter((s) => dentroPeriodo(s.data)), [sangrias, periodo, mesReferencia]);
   const contasPeriodo = useMemo(
     () => contasFluxo.filter((c) => dentroPeriodo(c.vencimento) || (c.dataPagamento && dentroPeriodo(c.dataPagamento))),
-    [contasFluxo, periodo]
+    [contasFluxo, periodo, mesReferencia]
   );
 
   const totalVendas = useMemo(
@@ -476,19 +383,14 @@ export default function App() {
   const totalSumup = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.sumup, 0), [vendasPeriodo]);
   const dinheiro = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.dinheiro, 0), [vendasPeriodo]);
   const totalOutros = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.outros, 0), [vendasPeriodo]);
-  const totalCartoes = totalInfinity + totalBanese + totalSumup;
 
   const metaNumero = Number(metaDiaria) || 0;
   const faltaMeta = Math.max(metaNumero - totalVendas, 0);
   const percentualMeta = metaNumero > 0 ? Math.min((totalVendas / metaNumero) * 100, 100) : 0;
 
   const vendasMesAtual = useMemo(() => {
-    const agora = new Date();
-    return vendas.filter((v) => {
-      const d = new Date(`${v.data}T00:00:00`);
-      return d.getMonth() === agora.getMonth() && d.getFullYear() === agora.getFullYear();
-    });
-  }, [vendas]);
+    return vendas.filter((v) => v.data.startsWith(mesReferencia));
+  }, [vendas, mesReferencia]);
 
   const totalVendasMes = useMemo(
     () => vendasMesAtual.reduce((acc, v) => acc + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros, 0),
@@ -501,7 +403,28 @@ export default function App() {
   const totalSangria = useMemo(() => sangriasPeriodo.reduce((acc, s) => acc + s.valor, 0), [sangriasPeriodo]);
   const fundoCaixaNumero = Number(fundoCaixa) || 0;
   const caixaEsperado = fundoCaixaNumero + dinheiro - totalSangria;
-  const diferenca = (Number(caixaReal) || 0) - caixaEsperado;
+
+  const previewInfinity = Number(vendaForm.infinity) || 0;
+  const previewBanese = Number(vendaForm.banese) || 0;
+  const previewSumup = Number(vendaForm.sumup) || 0;
+  const previewDinheiroContado = Number(vendaForm.dinheiroContado) || 0;
+  const previewOutros = Number(vendaForm.outros) || 0;
+  const previewSangria = Number(vendaForm.despesaRapida) || 0;
+  const previewDinheiroVendido = calcularDinheiroVendido(
+    previewDinheiroContado,
+    fundoCaixaNumero,
+    previewSangria
+  );
+  const previewRetiradaFinal = calcularRetiradaFinal(
+    previewDinheiroContado,
+    fundoCaixaNumero
+  );
+  const previewTotalCaixaDia =
+    previewInfinity +
+    previewBanese +
+    previewSumup +
+    previewDinheiroVendido +
+    previewOutros;
 
   const contasPagasPeriodo = useMemo(() => contasPeriodo.filter((c) => c.status === "Pago"), [contasPeriodo]);
   const contasPagasFinanceiras = useMemo(() => contasPagasPeriodo.filter((c) => c.tipo === "Financeiro"), [contasPagasPeriodo]);
@@ -524,9 +447,10 @@ export default function App() {
     return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
   }, [contasPagasFinanceiras]);
 
-  const lucro = totalVendas - totalDespesasFinanceiras;
+  const totalLiquido = totalVendas - totalDespesasFinanceiras;
+  const nomeMesSelecionado = nomeMesAno(mesReferencia);
   const alertaGastoAlto = totalDespesasFinanceiras > totalVendas * 0.8 && totalVendas > 0;
-  const alertaLucroBaixo = lucro > 0 && lucro < totalVendas * 0.2;
+  const alertaLucroBaixo = totalLiquido > 0 && totalLiquido < totalVendas * 0.2;
   const principalCategoria = despesasPorCategoria.length > 0 ? despesasPorCategoria[0] : null;
   const alertaCategoriaPesada =
     principalCategoria ? principalCategoria[1] > totalDespesasFinanceiras * 0.4 && totalDespesasFinanceiras > 0 : false;
@@ -537,58 +461,128 @@ export default function App() {
 
   const graficoVendas = useMemo(() => {
     const mapa: Record<string, number> = {};
-    vendasPeriodo.forEach((v) => {
-      mapa[v.data] = (mapa[v.data] || 0) + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros;
-    });
+    vendas
+      .filter((v) => v.data.startsWith(mesReferencia))
+      .forEach((v) => {
+        mapa[v.data] = (mapa[v.data] || 0) + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros;
+      });
+
     return Object.entries(mapa)
       .sort((a, b) => a[0].localeCompare(b[0]))
-      .slice(-7)
-      .map(([label, valor]) => ({ label, valor }));
-  }, [vendasPeriodo]);
+      .map(([label, valor]) => ({
+        label: new Date(`${label}T00:00:00`).toLocaleDateString("pt-BR", {
+          day: "2-digit",
+          month: "2-digit",
+        }),
+        valor,
+      }));
+  }, [vendas, mesReferencia]);
 
   const alertaMetaBaixa = metaNumero > 0 && totalVendas < metaNumero && periodo === "dia";
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
-      setAuthPronto(false);
-      setLoaded(false);
-
-      if (!user) {
-        setLogado(false);
-        setUsuarioFirebase(null);
-        setUsuarioLogado(null);
-        setAuthPronto(true);
-        return;
-      }
-
+    async function carregarDados() {
       try {
-        setUsuarioFirebase(user);
-        const perfil = await carregarOuCriarPerfilUsuario(user);
+        const ref = doc(db, "gestao", "cidade-mae");
+        const snap = await getDoc(ref);
 
-        if (!perfil.ativo) {
-          await signOut(auth);
-          setErroLogin("Usuário inativo.");
-          setAuthPronto(true);
-          return;
+        if (snap.exists()) {
+          const dados = snap.data();
+          setVendas(dados.vendas || []);
+          setSangrias(dados.sangrias || []);
+          setContasFluxo(dados.contasFluxo || []);
+          setFechamentos(dados.fechamentos || []);
+          setMetaDiaria(dados.metaDiaria || "");
+          setMetaMensal(dados.metaMensal || "");
+          setFundoCaixa(dados.fundoCaixa || "");
+        } else {
+          const data = localStorage.getItem(STORAGE);
+          if (data) {
+            const parsed = JSON.parse(data);
+            setVendas(parsed.vendas || []);
+            setSangrias(parsed.sangrias || []);
+            setContasFluxo(parsed.contasFluxo || []);
+            setFechamentos(parsed.fechamentos || []);
+          }
+
+          const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
+          if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
+
+          const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
+          if (metaMensalSalva) setMetaMensal(metaMensalSalva);
+
+          const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
+          if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
         }
 
-        await carregarDadosSistema();
-        setLogado(true);
+        try {
+          await carregarUsuariosFirebase();
+        } catch (error) {
+          console.error("Erro ao carregar usuários:", error);
+          setUsuarios([]);
+        }
+
+        const auth = localStorage.getItem(AUTH_STORAGE);
+        const usuarioSalvo = localStorage.getItem("usuario_logado");
+        setLogado(auth === "true");
+
+        if (usuarioSalvo) {
+          try {
+            setUsuarioLogado(JSON.parse(usuarioSalvo));
+          } catch {
+            setUsuarioLogado(null);
+          }
+        }
       } catch (error) {
-        console.error("Erro ao carregar sessão autenticada:", error);
-        setErroLogin("Erro ao carregar seus dados. Tente novamente.");
+        console.error("Erro ao carregar dados:", error);
+
+        const data = localStorage.getItem(STORAGE);
+        if (data) {
+          const parsed = JSON.parse(data);
+          setVendas(parsed.vendas || []);
+          setSangrias(parsed.sangrias || []);
+          setContasFluxo(parsed.contasFluxo || []);
+          setFechamentos(parsed.fechamentos || []);
+        }
+
+        const metaDiariaSalva = localStorage.getItem(META_DIARIA_STORAGE);
+        if (metaDiariaSalva) setMetaDiaria(metaDiariaSalva);
+
+        const metaMensalSalva = localStorage.getItem(META_MENSAL_STORAGE);
+        if (metaMensalSalva) setMetaMensal(metaMensalSalva);
+
+        const fundoCaixaSalvo = localStorage.getItem(FUNDO_CAIXA_STORAGE);
+        if (fundoCaixaSalvo) setFundoCaixa(fundoCaixaSalvo);
+
+        try {
+          await carregarUsuariosFirebase();
+        } catch (error) {
+          console.error("Erro ao carregar usuários:", error);
+          setUsuarios([]);
+        }
+
+        const auth = localStorage.getItem(AUTH_STORAGE);
+        const usuarioSalvo = localStorage.getItem("usuario_logado");
+        setLogado(auth === "true");
+
+        if (usuarioSalvo) {
+          try {
+            setUsuarioLogado(JSON.parse(usuarioSalvo));
+          } catch {
+            setUsuarioLogado(null);
+          }
+        }
       } finally {
         setLoaded(true);
-        setAuthPronto(true);
       }
-    });
+    }
 
-    return () => unsubscribe();
+    carregarDados();
   }, []);
 
   useEffect(() => {
-    if (!loaded || !usuarioFirebase) return;
+    if (!loaded) return;
 
     async function salvar() {
       try {
@@ -613,7 +607,7 @@ export default function App() {
     localStorage.setItem(META_DIARIA_STORAGE, metaDiaria);
     localStorage.setItem(META_MENSAL_STORAGE, metaMensal);
     localStorage.setItem(FUNDO_CAIXA_STORAGE, fundoCaixa);
-  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, fundoCaixa, loaded, usuarioFirebase]);
+  }, [vendas, sangrias, contasFluxo, fechamentos, metaDiaria, metaMensal, fundoCaixa, loaded]);
 
   useEffect(() => {
     if (!mensagem) return;
@@ -622,98 +616,52 @@ export default function App() {
   }, [mensagem]);
 
   async function entrar() {
-  setErroLogin("");
+    setErroLogin("");
 
-  const loginDigitado = normalizarLogin(loginForm.usuario);
-  const senhaDigitada = loginForm.senha;
-
-  if (!loginDigitado || !senhaDigitada) {
-    setErroLogin("Informe e-mail/usuário e senha.");
-    return;
-  }
-
-  const tentativas = loginPodeSerEmail(loginDigitado)
-    ? [loginDigitado]
-    : [loginParaEmail(loginDigitado)];
-
-  let ultimoErro: any = null;
-
-  for (const emailTentativa of tentativas) {
     try {
-      await signInWithEmailAndPassword(auth, emailTentativa, senhaDigitada);
-      setLoginForm({ usuario: "", senha: "" });
-      return;
-    } catch (error: any) {
-      ultimoErro = error;
+      const lista = await carregarUsuariosFirebase();
+
+      const usuarioEncontrado = lista.find(
+        (u) =>
+          u.usuario === loginForm.usuario &&
+          u.senha === loginForm.senha &&
+          u.ativo === true
+      );
+
+      if (usuarioEncontrado) {
+        setLogado(true);
+        setUsuarioLogado(usuarioEncontrado);
+        localStorage.setItem(AUTH_STORAGE, "true");
+        localStorage.setItem("usuario_logado", JSON.stringify(usuarioEncontrado));
+        setErroLogin("");
+        setLoginForm({ usuario: "", senha: "" });
+      } else {
+        setErroLogin("Usuário ou senha inválidos.");
+      }
+    } catch (error) {
+      console.error("Erro ao fazer login:", error);
+      setErroLogin("Erro ao conectar com o banco de dados.");
     }
   }
 
-  console.error("Erro ao fazer login:", ultimoErro);
-
-  if (
-    ultimoErro?.code === "auth/invalid-credential" ||
-    ultimoErro?.code === "auth/wrong-password" ||
-    ultimoErro?.code === "auth/user-not-found" ||
-    ultimoErro?.code === "auth/invalid-email"
-  ) {
-    setErroLogin("E-mail/usuário ou senha inválidos.");
-    return;
-  }
-
-  if (ultimoErro?.code === "auth/too-many-requests") {
-    setErroLogin("Muitas tentativas. Aguarde alguns minutos e tente novamente.");
-    return;
-  }
-
-  if (ultimoErro?.code === "auth/network-request-failed") {
-    setErroLogin("Falha de rede. Verifique a internet.");
-    return;
-  }
-
-  if (ultimoErro?.code === "auth/operation-not-allowed") {
-    setErroLogin("Login por e-mail/senha não está habilitado no Firebase.");
-    return;
-  }
-
-  if (ultimoErro?.code === "auth/unauthorized-domain") {
-    setErroLogin("Domínio não autorizado no Firebase Authentication.");
-    return;
-  }
-
-  setErroLogin(`Erro: ${ultimoErro?.code || "desconhecido"}`);
-}
-
-  async function sair() {
-    await signOut(auth);
+  function sair() {
+    setLogado(false);
+    setUsuarioLogado(null);
+    localStorage.removeItem(AUTH_STORAGE);
+    localStorage.removeItem("usuario_logado");
     setMensagem("Sessão encerrada.");
   }
 
   async function salvarCredenciais() {
     setErroCredenciais("");
 
-    if (!usuarioFirebase || !usuarioLogado) {
-      setErroCredenciais("Sessão inválida. Entre novamente.");
-      return;
-    }
+    const usuarioValido =
+      usuarioLogado &&
+      usuarioLogado.usuario === credenciaisForm.usuarioAtual &&
+      usuarioLogado.senha === credenciaisForm.senhaAtual;
 
-    if (usuarioLogado.tipo !== "admin") {
-      setErroCredenciais("Somente usuário admin pode criar novos acessos.");
-      return;
-    }
-
-    const usuarioAtualInformado = normalizarLogin(credenciaisForm.usuarioAtual);
-    const usuarioAtualValido =
-      usuarioAtualInformado === normalizarLogin(usuarioLogado.usuario) ||
-      usuarioAtualInformado === normalizarLogin(usuarioLogado.email) ||
-      usuarioAtualInformado === normalizarLogin(emailParaUsuario(usuarioLogado.email));
-
-    if (!usuarioAtualValido) {
-      setErroCredenciais("Usuário atual incorreto.");
-      return;
-    }
-
-    if (!credenciaisForm.senhaAtual) {
-      setErroCredenciais("Informe a senha atual para confirmar.");
+    if (!usuarioValido) {
+      setErroCredenciais("Usuário atual ou senha atual incorretos.");
       return;
     }
 
@@ -728,68 +676,44 @@ export default function App() {
     }
 
     try {
-      const credencialAtual = EmailAuthProvider.credential(
-        usuarioFirebase.email || loginParaEmail(usuarioLogado.usuario),
-        credenciaisForm.senhaAtual
-      );
+      const { ref } = await obterColecaoUsuarios();
+      const lista = await carregarUsuariosFirebase();
 
-      await reauthenticateWithCredential(usuarioFirebase, credencialAtual);
-
-      const novoLogin = credenciaisForm.novoUsuario.trim().toLowerCase();
-      const novoEmail = loginParaEmail(novoLogin);
-      const novoNome = credenciaisForm.novoNome.trim() || credenciaisForm.novoUsuario.trim();
-
-      const existe = usuarios.some(
-        (u) => u.usuario.toLowerCase() === novoLogin || u.email.toLowerCase() === novoEmail
-      );
+      const existe = lista.some((u) => u.usuario === credenciaisForm.novoUsuario);
       if (existe) {
         setErroCredenciais("Esse usuário já existe.");
         return;
       }
 
-      const novoUserCredential = await createUserWithEmailAndPassword(secondaryAuth, novoEmail, credenciaisForm.novaSenha);
-      const nomeColecao = await detectarColecaoUsuarios();
-
-      const novoPerfil: UsuarioSistema = {
-        id: novoUserCredential.user.uid,
-        uid: novoUserCredential.user.uid,
-        usuario: novoLogin,
-        email: novoEmail,
-        nome: novoNome,
+      const novoUsuario: UsuarioSistema = {
+        usuario: credenciaisForm.novoUsuario,
+        senha: credenciaisForm.novaSenha,
+        nome: credenciaisForm.novoUsuario,
         tipo: "caixa",
         ativo: true,
       };
 
-      await setDoc(doc(db, nomeColecao, novoUserCredential.user.uid), novoPerfil, { merge: true });
-      await signOut(secondaryAuth);
+      const docRef = await addDoc(ref, novoUsuario);
 
-      setUsuarios((prev) => [...prev.filter((item) => item.uid !== novoPerfil.uid), novoPerfil]);
-      setCredenciaisForm({
-        usuarioAtual: "",
-        senhaAtual: "",
-        novoUsuario: "",
-        novoNome: "",
-        novaSenha: "",
-        confirmarSenha: "",
-      });
+      setUsuarios((prev) => [...prev, { ...novoUsuario, id: docRef.id }]);
+      setCredenciaisForm({ usuarioAtual: "", senhaAtual: "", novoUsuario: "", novaSenha: "", confirmarSenha: "" });
       setMensagem("Novo usuário criado com sucesso.");
-    } catch (error: any) {
+    } catch (error) {
       console.error("Erro ao salvar usuário:", error);
-
-      if (error?.code === "auth/email-already-in-use") {
-        setErroCredenciais("Esse usuário já existe.");
-      } else if (error?.code === "auth/weak-password") {
-        setErroCredenciais("A nova senha precisa ter pelo menos 6 caracteres.");
-      } else if (error?.code === "auth/invalid-credential" || error?.code === "auth/wrong-password") {
-        setErroCredenciais("Senha atual incorreta.");
-      } else {
-        setErroCredenciais("Erro ao salvar usuário no banco.");
-      }
+      setErroCredenciais("Erro ao salvar usuário no banco.");
     }
   }
 
   function salvarVenda() {
     const vendaId = uid();
+    const fundoCaixaInformado = Number(fundoCaixa) || 0;
+    const dinheiroContado = Number(vendaForm.dinheiroContado) || 0;
+    const despesaRapida = Number(vendaForm.despesaRapida) || 0;
+    const dinheiroVendido = calcularDinheiroVendido(
+      dinheiroContado,
+      fundoCaixaInformado,
+      despesaRapida
+    );
 
     const novaVenda: Venda = {
       id: vendaId,
@@ -797,9 +721,11 @@ export default function App() {
       infinity: Number(vendaForm.infinity) || 0,
       banese: Number(vendaForm.banese) || 0,
       sumup: Number(vendaForm.sumup) || 0,
-      dinheiro: Number(vendaForm.dinheiro) || 0,
+      dinheiro: dinheiroVendido,
+      dinheiroContado,
+      fundoCaixaInformado,
       outros: Number(vendaForm.outros) || 0,
-      despesaRapida: Number(vendaForm.despesaRapida) || 0,
+      despesaRapida,
       motivoDespesa: vendaForm.motivoDespesa || "",
       observacao: vendaForm.observacao || "",
     };
@@ -827,12 +753,22 @@ export default function App() {
 
   function iniciarEdicaoVenda(venda: Venda) {
     setEditandoVendaId(venda.id);
+
+    if (typeof venda.fundoCaixaInformado === "number") {
+      setFundoCaixa(String(venda.fundoCaixaInformado));
+    }
+
+    const dinheiroContadoEdicao =
+      typeof venda.dinheiroContado === "number"
+        ? venda.dinheiroContado
+        : venda.dinheiro;
+
     setVendaForm({
       data: venda.data,
       infinity: venda.infinity ? String(venda.infinity) : "",
       banese: venda.banese ? String(venda.banese) : "",
       sumup: venda.sumup ? String(venda.sumup) : "",
-      dinheiro: venda.dinheiro ? String(venda.dinheiro) : "",
+      dinheiroContado: dinheiroContadoEdicao ? String(dinheiroContadoEdicao) : "",
       outros: venda.outros ? String(venda.outros) : "",
       despesaRapida: venda.despesaRapida ? String(venda.despesaRapida) : "",
       motivoDespesa: venda.motivoDespesa || "",
@@ -846,8 +782,15 @@ export default function App() {
 
     setSangrias((prev) => prev.filter((s) => s.origemVendaId !== editandoVendaId));
 
+    const fundoCaixaInformado = Number(fundoCaixa) || 0;
+    const dinheiroContado = Number(vendaForm.dinheiroContado) || 0;
     const novaDespesaRapida = Number(vendaForm.despesaRapida) || 0;
     const novoMotivo = vendaForm.motivoDespesa || "";
+    const dinheiroVendido = calcularDinheiroVendido(
+      dinheiroContado,
+      fundoCaixaInformado,
+      novaDespesaRapida
+    );
 
     if (novaDespesaRapida > 0) {
       const novaSangria: Sangria = {
@@ -871,7 +814,9 @@ export default function App() {
               infinity: Number(vendaForm.infinity) || 0,
               banese: Number(vendaForm.banese) || 0,
               sumup: Number(vendaForm.sumup) || 0,
-              dinheiro: Number(vendaForm.dinheiro) || 0,
+              dinheiro: dinheiroVendido,
+              dinheiroContado,
+              fundoCaixaInformado,
               outros: Number(vendaForm.outros) || 0,
               despesaRapida: novaDespesaRapida,
               motivoDespesa: novoMotivo,
@@ -944,33 +889,103 @@ export default function App() {
     setMensagem("Conta removida.");
   }
 
-  function fecharCaixaDia() {
-    if (!caixaReal) return setMensagem("Informe o caixa real antes de fechar o dia.");
-    const jaExiste = fechamentos.some((f) => f.data === hoje());
-    if (jaExiste) return setMensagem("Já existe fechamento salvo para hoje. Remova o anterior se quiser refazer.");
-    const novoFechamento: FechamentoDiario = {
-      id: uid(),
-      data: hoje(),
-      fundoCaixa: fundoCaixaNumero,
-      vendasDinheiro: dinheiro,
-      vendasCartao: totalCartoes,
-      vendasOutras: totalOutros,
-      totalVendas,
-      sangrias: totalSangria,
-      caixaEsperado,
-      caixaReal: Number(caixaReal) || 0,
-      diferenca,
-      observacao: fechamentoObservacao,
-      criadoEm: new Date().toISOString(),
-    };
-    setFechamentos((prev) => [novoFechamento, ...prev]);
-    setFechamentoObservacao("");
-    setMensagem("Fechamento do dia salvo com sucesso.");
-  }
-
   function removerFechamento(id: string) {
     setFechamentos((prev) => prev.filter((item) => item.id !== id));
     setMensagem("Fechamento removido.");
+  }
+
+  function exportarExcelMesSelecionado() {
+    const vendasMes = vendas
+      .filter((v) => v.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((v) => ({
+        Data: v.data,
+        "Fundo de Caixa":
+          typeof v.fundoCaixaInformado === "number" ? v.fundoCaixaInformado : "",
+        Infinity: v.infinity,
+        Banese: v.banese,
+        SumUp: v.sumup,
+        "Dinheiro Contado":
+          typeof v.dinheiroContado === "number" ? v.dinheiroContado : "",
+        "Dinheiro Vendido": v.dinheiro,
+        Outros: v.outros,
+        "Despesa Rápida / Sangria": v.despesaRapida || 0,
+        "Retirada Final / Sobra":
+          typeof v.dinheiroContado === "number" && typeof v.fundoCaixaInformado === "number"
+            ? calcularRetiradaFinal(v.dinheiroContado, v.fundoCaixaInformado)
+            : "",
+        "Motivo da Despesa": v.motivoDespesa || "",
+        Observação: v.observacao || "",
+        "Total do Dia": v.infinity + v.banese + v.sumup + v.dinheiro + v.outros,
+      }));
+
+    const sangriasMes = sangrias
+      .filter((s) => s.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((s) => ({
+        Data: s.data,
+        Categoria: s.categoria,
+        Descrição: s.descricao,
+        Valor: s.valor,
+      }));
+
+    const fechamentosMes = fechamentos
+      .filter((f) => f.data.startsWith(mesReferencia))
+      .sort((a, b) => a.data.localeCompare(b.data))
+      .map((f) => ({
+        Data: f.data,
+        "Fundo de Caixa": f.fundoCaixa,
+        "Vendas em Dinheiro": f.vendasDinheiro,
+        "Vendas em Cartão": f.vendasCartao,
+        "Vendas Outras": f.vendasOutras,
+        "Total de Vendas": f.totalVendas,
+        Sangrias: f.sangrias,
+        "Caixa Esperado": f.caixaEsperado,
+        "Caixa Real": f.caixaReal,
+        Diferença: f.diferenca,
+        Observação: f.observacao || "",
+        "Criado em": f.criadoEm,
+      }));
+
+    const fluxoMes = contasFluxo
+      .filter(
+        (c) =>
+          c.vencimento.startsWith(mesReferencia) ||
+          (c.dataPagamento && c.dataPagamento.startsWith(mesReferencia))
+      )
+      .sort((a, b) => a.vencimento.localeCompare(b.vencimento))
+      .map((c) => ({
+        Descrição: c.descricao,
+        Categoria: c.categoria,
+        Tipo: c.tipo,
+        Valor: c.valor,
+        Vencimento: c.vencimento,
+        Status: c.status,
+        "Forma de Pagamento": c.formaPagamento,
+        "Data Pagamento": c.dataPagamento || "",
+      }));
+
+    const resumo = [
+      {
+        Mês: nomeMesSelecionado,
+        "Total de Vendas": vendasMes.reduce((acc, item) => acc + Number(item["Total do Dia"] || 0), 0),
+        "Total de Sangrias": sangriasMes.reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Total Despesas Financeiras": fluxoMes
+          .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
+          .reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Dias com Caixa": vendasMes.length,
+      },
+    ];
+
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(resumo), "Resumo");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(vendasMes), "Caixa Diário");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(sangriasMes), "Sangrias");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fechamentosMes), "Fechamentos");
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(fluxoMes), "Fluxo Financeiro");
+
+    XLSX.writeFileXLSX(workbook, `caixa-${mesReferencia}.xlsx`);
+    setMensagem(`Excel do mês ${nomeMesSelecionado} exportado com sucesso.`);
   }
 
   function exportarBackup() {
@@ -1004,32 +1019,17 @@ export default function App() {
     reader.readAsText(file);
   }
 
-  if (!authPronto) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4 md:p-8">
-        <div className="rounded-[28px] border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
-          Carregando acesso seguro...
-        </div>
-      </div>
-    );
-  }
-
   if (!logado) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-100 p-4 md:p-8">
         <div className="w-full max-w-md rounded-[28px] border border-slate-200 bg-white p-8 shadow-sm">
           <div className="mb-6">
             <h1 className="text-3xl font-bold tracking-tight text-slate-900">Gestão Cidade Mãe</h1>
-            <p className="mt-2 text-sm text-slate-600">Entre para acessar o sistema com login seguro.</p>
+            <p className="mt-2 text-sm text-slate-600">Entre para acessar o sistema.</p>
           </div>
           <div className="space-y-4">
-            <Campo label="E-mail ou usuário">
-              <Input
-                type="text"
-                value={loginForm.usuario}
-                onChange={(e) => setLoginForm({ ...loginForm, usuario: e.target.value.toLowerCase() })}
-                placeholder="Ex.: admin@cidademae.com"
-              />
+            <Campo label="Usuário">
+              <Input type="text" value={loginForm.usuario} onChange={(e) => setLoginForm({ ...loginForm, usuario: e.target.value })} />
             </Campo>
             <Campo label="Senha">
               <Input
@@ -1039,13 +1039,12 @@ export default function App() {
               />
             </Campo>
             {erroLogin ? <div className="text-sm text-red-600">{erroLogin}</div> : null}
-            <div className="text-xs text-slate-500">Entre com o e-mail cadastrado no Firebase Authentication. Para usuarios criados dentro do sistema, use o login curto.</div>
             <div className="pt-2">
               <Botao onClick={entrar}>Entrar</Botao>
             </div>
           </div>
           <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500">
-            Login protegido por Firebase Authentication.
+            Usuários cadastrados: <strong>{usuarios.length}</strong>
           </div>
         </div>
       </div>
@@ -1067,13 +1066,8 @@ export default function App() {
                   Caixa diário separado do financeiro mensal, com fechamento do dia, metas, histórico e automação de sangria.
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-3">
-                {usuarioLogado ? (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                    Usuário: <strong className="text-slate-900">{usuarioLogado.nome}</strong>
-                    <span className="ml-2 text-xs uppercase text-slate-500">{usuarioLogado.tipo}</span>
-                  </div>
-                ) : null}
+              <div className="flex flex-wrap gap-3">
+                <Botao variante="secundario" onClick={exportarExcelMesSelecionado}>Exportar Excel do mês</Botao>
                 <Botao variante="secundario" onClick={exportarBackup}>Exportar backup</Botao>
                 <label className="cursor-pointer rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50">
                   Importar backup
@@ -1130,8 +1124,22 @@ export default function App() {
                 </button>
               ))}
             </div>
-            <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
-              Período selecionado: <strong className="text-slate-800">{periodo}</strong>
+            <div className="flex flex-wrap items-center gap-3">
+              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, -1))}>
+                Mês anterior
+              </Botao>
+              <Input
+                type="month"
+                value={mesReferencia}
+                onChange={(e) => setMesReferencia(e.target.value)}
+                className="w-auto min-w-[170px]"
+              />
+              <Botao variante="secundario" onClick={() => setMesReferencia(navegarMesRef(mesReferencia, 1))}>
+                Próximo mês
+              </Botao>
+              <div className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-500 shadow-sm">
+                Período: <strong className="text-slate-800">{periodo}</strong> • Mês: <strong className="text-slate-800 capitalize">{nomeMesSelecionado}</strong>
+              </div>
             </div>
           </div>
 
@@ -1140,18 +1148,26 @@ export default function App() {
             <Bloco titulo="Infinity" valor={moeda(totalInfinity)} />
             <Bloco titulo="Banese" valor={moeda(totalBanese)} />
             <Bloco titulo="SumUp" valor={moeda(totalSumup)} />
-            <Bloco titulo="Dinheiro" valor={moeda(dinheiro)} />
+            <Bloco titulo="Dinheiro vendido" valor={moeda(dinheiro)} />
             <Bloco titulo="Outros" valor={moeda(totalOutros)} />
             <Bloco titulo="Desp. rápidas" valor={moeda(totalDespesasCaixa)} subtitulo="Mexem no caixa" />
             <Bloco titulo="Desp. financeiras" valor={moeda(totalDespesasFinanceiras)} subtitulo="Fluxo mensal" />
             <Bloco titulo="Fundo de caixa" valor={moeda(fundoCaixaNumero)} />
-            <Bloco titulo="Total" valor={moeda(lucro)} destaque />
+            <Bloco titulo="Total" valor={moeda(totalLiquido)} subtitulo="Vendas - despesas financeiras pagas" destaque />
           </div>
 
           <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr_0.8fr]">
             
-            <Card titulo={editandoVendaId ? "Editar caixa do dia" : "Lançar Caixa do Dia"}>
+            <Card titulo={editandoVendaId ? "Editar Caixa do Dia" : "Lançar Caixa do Dia"}>
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+                    <Campo label="Fundo de caixa">
+                      <Input
+                        type="number"
+                        value={fundoCaixa}
+                        onChange={(e) => setFundoCaixa(e.target.value)}
+                        placeholder="Ex.: 200"
+                      />
+                    </Campo>
                     <Campo label="Data">
                       <Input type="date" value={vendaForm.data} onChange={(e) => setVendaForm({ ...vendaForm, data: e.target.value })} />
                     </Campo>
@@ -1164,13 +1180,18 @@ export default function App() {
                     <Campo label="SumUp">
                       <Input type="number" value={vendaForm.sumup} onChange={(e) => setVendaForm({ ...vendaForm, sumup: e.target.value })} />
                     </Campo>
-                    <Campo label="Dinheiro">
-                      <Input type="number" value={vendaForm.dinheiro} onChange={(e) => setVendaForm({ ...vendaForm, dinheiro: e.target.value })} />
+                    <Campo label="Dinheiro contado no caixa">
+                      <Input
+                        type="number"
+                        value={vendaForm.dinheiroContado}
+                        onChange={(e) => setVendaForm({ ...vendaForm, dinheiroContado: e.target.value })}
+                        placeholder="Ex.: 404.75"
+                      />
                     </Campo>
                     <Campo label="Outros">
                       <Input type="number" value={vendaForm.outros} onChange={(e) => setVendaForm({ ...vendaForm, outros: e.target.value })} />
                     </Campo>
-                    <Campo label="Despesa rápida">
+                    <Campo label="Despesa rápida / sangria">
                       <Input
                         type="number"
                         value={vendaForm.despesaRapida}
@@ -1196,6 +1217,38 @@ export default function App() {
                         />
                       </Campo>
                     </div>
+
+                    <div className="md:col-span-2 xl:col-span-3 2xl:col-span-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="text-sm text-slate-500">Sangria do dia</div>
+                        <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(previewSangria)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Valor retirado durante o dia
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="text-sm text-slate-500">Dinheiro de venda calculado</div>
+                        <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(previewDinheiroVendido)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Dinheiro contado - fundo + sangria
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="text-sm text-slate-500">Retirada final / sobra</div>
+                        <div className={`mt-1 text-2xl font-bold ${previewRetiradaFinal >= 0 ? "text-slate-900" : "text-red-600"}`}>{moeda(previewRetiradaFinal)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Dinheiro contado - fundo de caixa
+                        </div>
+                      </div>
+                      <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                        <div className="text-sm text-slate-500">Total do caixa do dia</div>
+                        <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(previewTotalCaixaDia)}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Infinity + Banese + SumUp + dinheiro vendido + outros
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="flex flex-wrap items-end gap-2">
                       {editandoVendaId ? (
                         <>
@@ -1242,24 +1295,12 @@ export default function App() {
                       <div className="h-4 rounded-full bg-indigo-600 transition-all" style={{ width: `${percentualMetaMensal}%` }} />
                     </div>
                     <div className="mt-2 text-sm font-medium text-slate-700">{percentualMetaMensal.toFixed(0)}%</div>
-                    <div className="mt-1 text-xs text-slate-500">Vendas do mês atual: {moeda(totalVendasMes)}</div>
+                    <div className="mt-1 text-xs text-slate-500">Vendas do mês selecionado: {moeda(totalVendasMes)}</div>
                   </div>
                 </div>
                 <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <div className="text-sm text-slate-500">Falta para meta do mês</div>
                   <div className="mt-2 text-2xl font-bold text-slate-900">{moeda(faltaMetaMensal)}</div>
-                </div>
-              </div>
-            </Card>
-
-            <Card titulo="Fundo de caixa">
-              <div className="space-y-4">
-                <Campo label="Valor inicial no caixa">
-                  <Input type="number" value={fundoCaixa} onChange={(e) => setFundoCaixa(e.target.value)} placeholder="Ex.: 200" />
-                </Campo>
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">Fundo atual</div>
-                  <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(fundoCaixaNumero)}</div>
                 </div>
               </div>
             </Card>
@@ -1271,11 +1312,11 @@ export default function App() {
                   <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(totalSangria)}</div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">Caixa esperado</div>
+                  <div className="text-sm text-slate-500">Dinheiro esperado no caixa</div>
                   <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(caixaEsperado)}</div>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="text-sm text-slate-500">Contas pendentes</div>
+                  <div className="text-sm text-slate-500">Contas pendentes do período</div>
                   <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(totalContasPendentes)}</div>
                 </div>
               </div>
@@ -1307,35 +1348,7 @@ export default function App() {
             <div className="space-y-6">
               <div className="grid gap-5 2xl:grid-cols-2">
                 <GraficoBarras titulo="Top despesas financeiras por categoria" dados={graficoCategorias} />
-                <GraficoBarras titulo="Vendas por dia" dados={graficoVendas} />
-              </div>
-
-              <div className="grid gap-5 2xl:grid-cols-[1.35fr_0.65fr]">
-                
-
-                <Card titulo="Conferência de caixa">
-                  <div className="space-y-4">
-                    <Input type="number" placeholder="Digite quanto tem fisicamente no caixa" value={caixaReal} onChange={(e) => setCaixaReal(e.target.value)} />
-                    <Textarea
-                      rows={3}
-                      placeholder="Observação do fechamento do dia"
-                      value={fechamentoObservacao}
-                      onChange={(e) => setFechamentoObservacao(e.target.value)}
-                    />
-                    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                      <div className="text-sm text-slate-500">Diferença</div>
-                      <div className={`mt-1 text-3xl font-bold ${diferenca === 0 ? "text-emerald-600" : diferenca > 0 ? "text-blue-600" : "text-red-600"}`}>
-                        {moeda(diferenca)}
-                      </div>
-                    </div>
-                    <div className="text-sm text-slate-600">
-                      {diferenca === 0 && "Caixa batendo certinho."}
-                      {diferenca > 0 && "Tem dinheiro sobrando no caixa."}
-                      {diferenca < 0 && "Está faltando dinheiro no caixa."}
-                    </div>
-                    <Botao onClick={fecharCaixaDia}>Fechar caixa do dia</Botao>
-                  </div>
-                </Card>
+                <GraficoBarras titulo="Vendas por dia do mês selecionado" dados={graficoVendas} />
               </div>
 
               <Card titulo="Histórico de vendas lançadas">
@@ -1349,7 +1362,14 @@ export default function App() {
                       .map((item) => {
                         const total = item.infinity + item.banese + item.sumup + item.dinheiro + item.outros;
                         const despesaRapida = item.despesaRapida || 0;
-                        const dinheiroLiquido = (item.dinheiro || 0) - despesaRapida;
+                        const dinheiroContado =
+                          typeof item.dinheiroContado === "number" ? item.dinheiroContado : null;
+                        const fundoInformado =
+                          typeof item.fundoCaixaInformado === "number" ? item.fundoCaixaInformado : null;
+                        const retiradaFinal =
+                          dinheiroContado !== null && fundoInformado !== null
+                            ? calcularRetiradaFinal(dinheiroContado, fundoInformado)
+                            : null;
 
                         return (
                           <div key={item.id} className="rounded-2xl border border-slate-200 p-4">
@@ -1360,10 +1380,12 @@ export default function App() {
                                   <div>Infinity: <strong>{moeda(item.infinity)}</strong></div>
                                   <div>Banese: <strong>{moeda(item.banese)}</strong></div>
                                   <div>SumUp: <strong>{moeda(item.sumup)}</strong></div>
-                                  <div>Dinheiro: <strong>{moeda(item.dinheiro)}</strong></div>
+                                  <div>Dinheiro vendido: <strong>{moeda(item.dinheiro)}</strong></div>
                                   <div>Outros: <strong>{moeda(item.outros)}</strong></div>
                                   <div>Despesa rápida: <strong>{moeda(despesaRapida)}</strong></div>
-                                  <div>Dinheiro líquido: <strong>{moeda(dinheiroLiquido)}</strong></div>
+                                  {fundoInformado !== null ? <div>Fundo de caixa: <strong>{moeda(fundoInformado)}</strong></div> : null}
+                                  {dinheiroContado !== null ? <div>Dinheiro contado: <strong>{moeda(dinheiroContado)}</strong></div> : null}
+                                  {retiradaFinal !== null ? <div>Retirada final / sobra: <strong>{moeda(retiradaFinal)}</strong></div> : null}
                                 </div>
                                 <div>Total: <strong>{moeda(total)}</strong></div>
                                 {item.motivoDespesa ? (
@@ -1413,10 +1435,7 @@ export default function App() {
                       <Input type="password" value={credenciaisForm.senhaAtual} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, senhaAtual: e.target.value })} />
                     </Campo>
                     <Campo label="Novo usuário">
-                      <Input type="text" value={credenciaisForm.novoUsuario} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoUsuario: e.target.value.toLowerCase() })} placeholder="Ex.: maria" />
-                    </Campo>
-                    <Campo label="Nome do usuário">
-                      <Input type="text" value={credenciaisForm.novoNome} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoNome: e.target.value })} placeholder="Ex.: Maria" />
+                      <Input type="text" value={credenciaisForm.novoUsuario} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novoUsuario: e.target.value })} />
                     </Campo>
                     <Campo label="Nova senha">
                       <Input type="password" value={credenciaisForm.novaSenha} onChange={(e) => setCredenciaisForm({ ...credenciaisForm, novaSenha: e.target.value })} />
