@@ -272,6 +272,8 @@ function GraficoBarras({ titulo, dados }: { titulo: string; dados: Array<{ label
   );
 }
 
+
+
 export default function App() {
   const [aba, setAba] = useState<"dashboard" | "fluxo" | "fechamentos">("dashboard");
   const [periodo, setPeriodo] = useState<"dia" | "semana" | "mes">("dia");
@@ -546,22 +548,52 @@ export default function App() {
     [contasPagasFinanceiras]
   );
   const totalDespesasCaixa = totalSangria;
+  const totalSaidasPeriodo = totalDespesasCaixa + totalDespesasFinanceiras;
+
+  const sangriasMesSelecionado = useMemo(
+    () => sangrias.filter((s) => s.data.startsWith(mesReferencia)),
+    [sangrias, mesReferencia]
+  );
+  const contasFinanceirasPagasMesSelecionado = useMemo(
+    () =>
+      contasFluxo.filter(
+        (c) => c.tipo === "Financeiro" && c.status === "Pago" && c.dataPagamento && c.dataPagamento.startsWith(mesReferencia)
+      ),
+    [contasFluxo, mesReferencia]
+  );
+  const totalDespesasRapidasMesSelecionado = useMemo(
+    () => sangriasMesSelecionado.reduce((acc, item) => acc + item.valor, 0),
+    [sangriasMesSelecionado]
+  );
+  const totalDespesasFinanceirasMesSelecionado = useMemo(
+    () => contasFinanceirasPagasMesSelecionado.reduce((acc, item) => acc + item.valor, 0),
+    [contasFinanceirasPagasMesSelecionado]
+  );
+  const totalSaidasMesSelecionado = totalDespesasRapidasMesSelecionado + totalDespesasFinanceirasMesSelecionado;
 
   const despesasPorCategoria = useMemo(() => {
     const mapa: Record<string, number> = {};
-    contasPagasFinanceiras.forEach((c) => {
+
+    contasFinanceirasPagasMesSelecionado.forEach((c) => {
       mapa[c.categoria] = (mapa[c.categoria] || 0) + c.valor;
     });
-    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
-  }, [contasPagasFinanceiras]);
 
-  const totalLiquido = totalVendas - totalDespesasFinanceiras;
+    sangriasMesSelecionado.forEach((s) => {
+      const chave = s.categoria || "Despesa rápida";
+      mapa[chave] = (mapa[chave] || 0) + s.valor;
+    });
+
+    return Object.entries(mapa).sort((a, b) => b[1] - a[1]);
+  }, [contasFinanceirasPagasMesSelecionado, sangriasMesSelecionado]);
+
+  const resultadoPeriodo = totalVendas - totalSaidasPeriodo;
+  const resultadoMesSelecionado = totalVendasMes - totalSaidasMesSelecionado;
   const nomeMesSelecionado = nomeMesAno(mesReferencia);
-  const alertaGastoAlto = totalDespesasFinanceiras > totalVendas * 0.8 && totalVendas > 0;
-  const alertaLucroBaixo = totalLiquido > 0 && totalLiquido < totalVendas * 0.2;
+  const alertaGastoAlto = totalSaidasPeriodo > totalVendas * 0.8 && totalVendas > 0;
+  const alertaLucroBaixo = resultadoPeriodo > 0 && resultadoPeriodo < totalVendas * 0.2;
   const principalCategoria = despesasPorCategoria.length > 0 ? despesasPorCategoria[0] : null;
   const alertaCategoriaPesada =
-    principalCategoria ? principalCategoria[1] > totalDespesasFinanceiras * 0.4 && totalDespesasFinanceiras > 0 : false;
+    principalCategoria ? principalCategoria[1] > totalSaidasMesSelecionado * 0.4 && totalSaidasMesSelecionado > 0 : false;
   const graficoCategorias = useMemo(
     () => despesasPorCategoria.slice(0, 5).map(([label, valor]) => ({ label, valor })),
     [despesasPorCategoria]
@@ -585,6 +617,13 @@ export default function App() {
         valor,
       }));
   }, [vendas, mesReferencia]);
+
+
+
+  const historicoVendasMesSelecionado = useMemo(
+    () => vendas.filter((item) => item.data.startsWith(mesReferencia)).slice().sort((a, b) => b.data.localeCompare(a.data)),
+    [vendas, mesReferencia]
+  );
 
   const alertaMetaBaixa = metaNumero > 0 && totalVendas < metaNumero && periodo === "dia";
   const alertaMetaMensalBaixa = metaMensalNumero > 0 && totalVendasMes < metaMensalNumero;
@@ -954,11 +993,14 @@ export default function App() {
     limparFormularioVenda();
   }
 
-  function removerVenda(id: string) {
-    setVendas((prev) => prev.filter((item) => item.id !== id));
-    setSangrias((prev) => prev.filter((item) => item.origemVendaId !== id));
-    if (editandoVendaId === id) limparFormularioVenda();
-    setMensagem("Venda removida.");
+  function removerVenda(venda: Venda) {
+    const confirmar = window.confirm(`Deseja excluir o Caixa do Dia ${venda.data}?`);
+    if (!confirmar) return;
+
+    setVendas((prev) => prev.filter((item) => item.id !== venda.id));
+    setSangrias((prev) => prev.filter((item) => item.origemVendaId !== venda.id));
+    if (editandoVendaId === venda.id) limparFormularioVenda();
+    setMensagem(`Caixa do dia ${venda.data} removido.`);
   }
 
   function salvarContaFluxo() {
@@ -1097,6 +1139,12 @@ export default function App() {
         "Total Despesas Financeiras": fluxoMes
           .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
           .reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Total de Saídas": sangriasMes.reduce((acc, item) => acc + Number(item.Valor || 0), 0) + fluxoMes
+          .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
+          .reduce((acc, item) => acc + Number(item.Valor || 0), 0),
+        "Resultado Real do Mês": vendasMes.reduce((acc, item) => acc + Number(item["Total do Dia"] || 0), 0) - (sangriasMes.reduce((acc, item) => acc + Number(item.Valor || 0), 0) + fluxoMes
+          .filter((item) => item.Tipo === "Financeiro" && item.Status === "Pago")
+          .reduce((acc, item) => acc + Number(item.Valor || 0), 0)),
         "Dias com Caixa": vendasMes.length,
       },
     ];
@@ -1230,7 +1278,7 @@ export default function App() {
             <div className="space-y-2">
               {alertaGastoAlto ? (
                 <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
-                  Atenção: suas despesas financeiras pagas estão acima de 80% das vendas no período.
+                  Atenção: suas saídas do período (despesas rápidas + financeiras pagas) estão acima de 80% das entradas.
                 </div>
               ) : null}
               {alertaLucroBaixo ? (
@@ -1240,7 +1288,7 @@ export default function App() {
               ) : null}
               {alertaCategoriaPesada && principalCategoria ? (
                 <div className="rounded-2xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm text-orange-800">
-                  Cuidado: a categoria <strong>{principalCategoria[0]}</strong> representa a maior parte dos gastos financeiros pagos no período.
+                  Cuidado: a categoria <strong>{principalCategoria[0]}</strong> representa a maior parte das saídas do mês selecionado.
                 </div>
               ) : null}
               {alertaMetaBaixa ? (
@@ -1299,7 +1347,7 @@ export default function App() {
             <Bloco titulo="Desp. rápidas" valor={moeda(totalDespesasCaixa)} subtitulo="Mexem no caixa" />
             <Bloco titulo="Desp. financeiras" valor={moeda(totalDespesasFinanceiras)} subtitulo="Fluxo mensal" />
             <Bloco titulo="Fundo de caixa" valor={moeda(fundoCaixaNumero)} />
-            <Bloco titulo="Total" valor={moeda(totalLiquido)} subtitulo="Vendas - despesas financeiras pagas" destaque />
+            <Bloco titulo="Resultado" valor={moeda(resultadoPeriodo)} subtitulo="Entradas - despesas rápidas - despesas financeiras" destaque />
           </div>
 
           <div className="grid gap-5 2xl:grid-cols-[1.15fr_1.15fr_0.7fr]">
@@ -1460,6 +1508,16 @@ export default function App() {
             </div>
           </Card>
 
+          <Card titulo={`Resumo financeiro de ${nomeMesSelecionado}`}>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+              <Bloco titulo="Entradas do mês" valor={moeda(totalVendasMes)} subtitulo="Vendas lançadas no mês selecionado" />
+              <Bloco titulo="Despesas rápidas" valor={moeda(totalDespesasRapidasMesSelecionado)} subtitulo="Saídas do caixa diário" />
+              <Bloco titulo="Desp. financeiras" valor={moeda(totalDespesasFinanceirasMesSelecionado)} subtitulo="Pagas no mês selecionado" />
+              <Bloco titulo="Saídas totais" valor={moeda(totalSaidasMesSelecionado)} subtitulo="Rápidas + financeiras" />
+              <Bloco titulo="Resultado do mês" valor={moeda(resultadoMesSelecionado)} subtitulo="Entradas - saídas totais" destaque />
+            </div>
+          </Card>
+
           <div className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2 shadow-sm">
             <button
               onClick={() => setAba("dashboard")}
@@ -1484,19 +1542,16 @@ export default function App() {
           {aba === "dashboard" ? (
             <div className="space-y-6">
               <div className="grid gap-5 2xl:grid-cols-2">
-                <GraficoBarras titulo="Top despesas financeiras por categoria" dados={graficoCategorias} />
+                <GraficoBarras titulo="Top saídas por categoria no mês" dados={graficoCategorias} />
                 <GraficoBarras titulo="Vendas por dia do mês selecionado" dados={graficoVendas} />
               </div>
 
-              <Card titulo="Histórico de vendas lançadas">
+              <Card titulo={`Histórico de vendas de ${nomeMesSelecionado}`}>
                 <div className="space-y-3">
-                  {vendas.length === 0 ? (
+                  {historicoVendasMesSelecionado.length === 0 ? (
                     <p className="text-sm text-slate-500">Nenhuma venda lançada ainda.</p>
                   ) : (
-                    vendas
-                      .slice()
-                      .sort((a, b) => b.data.localeCompare(a.data))
-                      .map((item) => {
+                    historicoVendasMesSelecionado.map((item) => {
                         const total = item.infinity + item.banese + item.sumup + item.dinheiro + item.outros;
                         const despesaRapida = item.despesaRapida || 0;
                         const dinheiroContado =
@@ -1530,7 +1585,7 @@ export default function App() {
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
                                 <Botao variante="secundario" onClick={() => iniciarEdicaoVenda(item)}>Editar</Botao>
-                                <Botao variante="perigo" onClick={() => removerVenda(item.id)}>Remover</Botao>
+                                <Botao variante="perigo" onClick={() => removerVenda(item)}>Remover</Botao>
                               </div>
                             </div>
                           </div>
