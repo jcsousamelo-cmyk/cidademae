@@ -25,7 +25,7 @@ type Venda = {
   data: string;
   infinity: number;
   banese: number;
-  sumup: number;
+  MercadoPago: number;
   dinheiro: number;
   dinheiroContado?: number;
   fundoCaixaInformado?: number;
@@ -316,7 +316,7 @@ export default function App() {
     data: hoje(),
     infinity: "",
     banese: "",
-    sumup: "",
+    MercadoPago: "",
     dinheiroContado: "",
     outros: "",
     despesaRapida: "",
@@ -456,7 +456,7 @@ export default function App() {
       data: hoje(),
       infinity: "",
       banese: "",
-      sumup: "",
+      MercadoPago: "",
       dinheiroContado: "",
       outros: "",
       despesaRapida: "",
@@ -490,12 +490,12 @@ export default function App() {
   );
 
   const totalVendas = useMemo(
-    () => vendasPeriodo.reduce((acc, v) => acc + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros, 0),
+    () => vendasPeriodo.reduce((acc, v) => acc + v.infinity + v.banese + v.MercadoPago + v.dinheiro + v.outros, 0),
     [vendasPeriodo]
   );
   const totalInfinity = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.infinity, 0), [vendasPeriodo]);
   const totalBanese = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.banese, 0), [vendasPeriodo]);
-  const totalSumup = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.sumup, 0), [vendasPeriodo]);
+  const totalMercadoPago= useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.MercadoPago, 0), [vendasPeriodo]);
   const dinheiro = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.dinheiro, 0), [vendasPeriodo]);
   const totalOutros = useMemo(() => vendasPeriodo.reduce((acc, v) => acc + v.outros, 0), [vendasPeriodo]);
 
@@ -506,7 +506,7 @@ export default function App() {
   const vendasMesAtual = useMemo(() => vendas.filter((v) => v.data.startsWith(mesReferencia)), [vendas, mesReferencia]);
 
   const totalVendasMes = useMemo(
-    () => vendasMesAtual.reduce((acc, v) => acc + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros, 0),
+    () => vendasMesAtual.reduce((acc, v) => acc + v.infinity + v.banese + v.MercadoPago + v.dinheiro + v.outros, 0),
     [vendasMesAtual]
   );
   const metaMensalNumero = Number(metaMensal) || 0;
@@ -519,7 +519,7 @@ export default function App() {
 
   const previewInfinity = Number(vendaForm.infinity) || 0;
   const previewBanese = Number(vendaForm.banese) || 0;
-  const previewSumup = Number(vendaForm.sumup) || 0;
+  const previewMercadoPago = Number(vendaForm.MercadoPago) || 0;
   const previewDinheiroContado = Number(vendaForm.dinheiroContado) || 0;
   const previewOutros = Number(vendaForm.outros) || 0;
   const previewSangria = Number(vendaForm.despesaRapida) || 0;
@@ -532,7 +532,7 @@ export default function App() {
   const previewTotalCaixaDia =
     previewInfinity +
     previewBanese +
-    previewSumup +
+    previewMercadoPago +
     previewDinheiroVendido +
     previewOutros;
 
@@ -604,7 +604,7 @@ export default function App() {
     vendas
       .filter((v) => v.data.startsWith(mesReferencia))
       .forEach((v) => {
-        mapa[v.data] = (mapa[v.data] || 0) + v.infinity + v.banese + v.sumup + v.dinheiro + v.outros;
+        mapa[v.data] = (mapa[v.data] || 0) + v.infinity + v.banese + v.MercadoPago + v.dinheiro + v.outros;
       });
 
     return Object.entries(mapa)
@@ -883,7 +883,7 @@ export default function App() {
       data: vendaForm.data,
       infinity: Number(vendaForm.infinity) || 0,
       banese: Number(vendaForm.banese) || 0,
-      sumup: Number(vendaForm.sumup) || 0,
+      MercadoPago: Number(vendaForm.MercadoPago) || 0,
       dinheiro: dinheiroVendido,
       dinheiroContado,
       fundoCaixaInformado,
@@ -930,7 +930,7 @@ export default function App() {
       data: venda.data,
       infinity: venda.infinity ? String(venda.infinity) : "",
       banese: venda.banese ? String(venda.banese) : "",
-      sumup: venda.sumup ? String(venda.sumup) : "",
+      MercadoPago: venda.MercadoPago ? String(venda.MercadoPago) : "",
       dinheiroContado: dinheiroContadoEdicao ? String(dinheiroContadoEdicao) : "",
       outros: venda.outros ? String(venda.outros) : "",
       despesaRapida: venda.despesaRapida ? String(venda.despesaRapida) : "",
@@ -976,7 +976,7 @@ export default function App() {
               data: vendaForm.data,
               infinity: Number(vendaForm.infinity) || 0,
               banese: Number(vendaForm.banese) || 0,
-              sumup: Number(vendaForm.sumup) || 0,
+              MercadoPago: Number(vendaForm.MercadoPago) || 0,
               dinheiro: dinheiroVendido,
               dinheiroContado,
               fundoCaixaInformado,
@@ -1070,7 +1070,7 @@ export default function App() {
           typeof v.fundoCaixaInformado === "number" ? v.fundoCaixaInformado : "",
         Infinity: v.infinity,
         Banese: v.banese,
-        SumUp: v.sumup,
+        MercadoPago: v.MercadoPago,
         "Dinheiro Contado":
           typeof v.dinheiroContado === "number" ? v.dinheiroContado : "",
         "Dinheiro Vendido": v.dinheiro,
@@ -1082,7 +1082,7 @@ export default function App() {
             : "",
         "Motivo da Despesa": v.motivoDespesa || "",
         Observação: v.observacao || "",
-        "Total do Dia": v.infinity + v.banese + v.sumup + v.dinheiro + v.outros,
+        "Total do Dia": v.infinity + v.banese + v.MercadoPago + v.dinheiro + v.outros,
       }));
 
     const sangriasMes = sangrias
@@ -1341,7 +1341,7 @@ export default function App() {
             <Bloco titulo="Vendas" valor={moeda(totalVendas)} subtitulo="Total do período" />
             <Bloco titulo="Infinity" valor={moeda(totalInfinity)} />
             <Bloco titulo="Banese" valor={moeda(totalBanese)} />
-            <Bloco titulo="SumUp" valor={moeda(totalSumup)} />
+            <Bloco titulo="MercadoPago" valor={moeda(totalMercadoPago)} />
             <Bloco titulo="Dinheiro vendido" valor={moeda(dinheiro)} />
             <Bloco titulo="Outros" valor={moeda(totalOutros)} />
             <Bloco titulo="Desp. rápidas" valor={moeda(totalDespesasCaixa)} subtitulo="Mexem no caixa" />
@@ -1370,8 +1370,8 @@ export default function App() {
                 <Campo label="Banese">
                   <Input type="number" value={vendaForm.banese} onChange={(e) => setVendaForm({ ...vendaForm, banese: e.target.value })} />
                 </Campo>
-                <Campo label="SumUp">
-                  <Input type="number" value={vendaForm.sumup} onChange={(e) => setVendaForm({ ...vendaForm, sumup: e.target.value })} />
+                <Campo label="MercadoPago">
+                  <Input type="number" value={vendaForm.MercadoPago} onChange={(e) => setVendaForm({ ...vendaForm, MercadoPago: e.target.value })} />
                 </Campo>
                 <Campo label="Dinheiro contado no caixa">
                   <Input
@@ -1430,7 +1430,7 @@ export default function App() {
                   <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
                     <div className="text-sm text-slate-500">Total do caixa do dia</div>
                     <div className="mt-1 text-2xl font-bold text-slate-900">{moeda(previewTotalCaixaDia)}</div>
-                    <div className="mt-1 text-xs text-slate-500">Infinity + Banese + SumUp + dinheiro vendido + outros</div>
+                    <div className="mt-1 text-xs text-slate-500">Infinity + Banese + MercadoPago + dinheiro vendido + outros</div>
                   </div>
                 </div>
 
@@ -1552,7 +1552,7 @@ export default function App() {
                     <p className="text-sm text-slate-500">Nenhuma venda lançada ainda.</p>
                   ) : (
                     historicoVendasMesSelecionado.map((item) => {
-                        const total = item.infinity + item.banese + item.sumup + item.dinheiro + item.outros;
+                        const total = item.infinity + item.banese + item.MercadoPago + item.dinheiro + item.outros;
                         const despesaRapida = item.despesaRapida || 0;
                         const dinheiroContado =
                           typeof item.dinheiroContado === "number" ? item.dinheiroContado : null;
@@ -1571,7 +1571,7 @@ export default function App() {
                                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                                   <div>Infinity: <strong>{moeda(item.infinity)}</strong></div>
                                   <div>Banese: <strong>{moeda(item.banese)}</strong></div>
-                                  <div>SumUp: <strong>{moeda(item.sumup)}</strong></div>
+                                  <div>MercadoPago: <strong>{moeda(item.MercadoPago)}</strong></div>
                                   <div>Dinheiro vendido: <strong>{moeda(item.dinheiro)}</strong></div>
                                   <div>Outros: <strong>{moeda(item.outros)}</strong></div>
                                   <div>Despesa rápida: <strong>{moeda(despesaRapida)}</strong></div>
